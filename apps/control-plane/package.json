@@ -1,0 +1,13 @@
+{
+  "name": "control-plane",
+  "private": true,
+  "version": "0.1.0",
+  "dependencies": {
+    "@sanity/client": "^7.23.0"
+  },
+  "scripts": {
+    "dev": "node ./src/server.js",
+    "signals:batch": "node ./src/signals/run-batch.js",
+    "test": "node --test ./test/*.test.js"
+  }
+}

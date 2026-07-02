@@ -1,0 +1,15 @@
+{
+  "name": "workspace",
+  "private": true,
+  "scripts": {
+    "bootstrap": "bash ./scripts/bootstrap-local.sh",
+    "infra:up": "npm --prefix ./apps/medusa run infra:up",
+    "infra:down": "npm --prefix ./apps/medusa run infra:down",
+    "infra:logs": "npm --prefix ./apps/medusa run infra:logs",
+    "dev:web": "npm --prefix ./apps/web run dev",
+    "dev:medusa": "npm --prefix ./apps/medusa run backend:dev",
+    "dev:control-plane": "npm --prefix ./apps/control-plane run dev",
+    "dev:all": "bash ./scripts/dev-all.sh",
+    "build:web": "npm --prefix ./apps/web run build"
+  }
+}

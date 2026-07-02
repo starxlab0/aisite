@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: medusa-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: medusa_backend
+    ports:
+      - "5432:5432"
+    volumes:
+      - medusa_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d medusa_backend"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: medusa-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - medusa_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  medusa_postgres_data:
+  medusa_redis_data:
+

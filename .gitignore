@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+
+# build outputs
+.next/
+dist/
+coverage/
+build/
+
+# local env
+.env
+.env.local
+.env.*.local
+
+# app-specific data / runtime state
+apps/control-plane/.data/
+apps/web/.next/
+apps/medusa/apps/backend/.env
+apps/medusa/apps/backend/.medusa/
+
+# logs
+*.log
+npm-debug.log*
+
+# system
+.DS_Store
+
+# local uploads / temp artifacts
+.uploads/

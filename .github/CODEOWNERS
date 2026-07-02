@@ -1,0 +1,7 @@
+* @starxlab0
+
+/apps/web/** @starxlab0
+/apps/control-plane/** @starxlab0
+/apps/medusa/** @starxlab0
+/packages/** @starxlab0
+/docs/** @starxlab0

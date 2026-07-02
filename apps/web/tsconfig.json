@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@site-kernel": ["../../packages/site-kernel/src/index.ts"],
+      "@site-kernel/*": ["../../packages/site-kernel/src/*"],
+      "@knowledge": ["../../packages/knowledge/src/index.ts"],
+      "@knowledge/*": ["../../packages/knowledge/src/*"],
+      "@ai-ops": ["../../packages/ai-ops/src/index.ts"],
+      "@ai-ops/*": ["../../packages/ai-ops/src/*"]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts"
+  ],
+  "exclude": ["node_modules"]
+}
