@@ -70,6 +70,30 @@ type OpsEventMeta = {
   note?: string;
 };
 
+import { governanceToneClass } from "./governance-ui";
+
+function derivePublishGovernanceState({
+  published,
+  latestRollback,
+}: {
+  published?: DraftPublishMeta;
+  latestRollback?: OpsEventMeta | null;
+}) {
+  const verificationLevel = published?.verification?.level ?? null;
+  const autoRollbackReason = published?.autoRollback?.triggerReason ?? null;
+
+  if (published?.autoRollback || (latestRollback && (latestRollback.trigger === "auto" || latestRollback.triggerReason === "verification-warning-threshold"))) {
+    return { label: "暂停发布中", tone: "warning", detail: autoRollbackReason ? `最近发生自动回退：${autoRollbackReason}` : "最近发生自动回退，先确认根因和修复方案。"};
+  }
+  if (verificationLevel === "blocked") {
+    return { label: "需要立即处理", tone: "critical", detail: "最新发布校验被 blocked，必须先修复问题后再发布。" };
+  }
+  if (verificationLevel === "warning") {
+    return { label: "可观察后重发", tone: "progress", detail: "最新发布包含 warning，可继续观察，但建议在下次发布前确认问题已收敛。" };
+  }
+  return { label: "继续排查", tone: "warning", detail: "暂无明确发布异常信号，结合 audit 与 recommendation 继续判断。" };
+}
+
 function renderLinkedDocuments(items?: Array<{ id: string; type: string; targetId: string; mode?: string }>) {
   if (!items?.length) return <p className="mt-2 text-xs text-zinc-500">linked docs: none</p>;
   return (
@@ -164,8 +188,16 @@ export function PublishResultPanel({
   published?: DraftPublishMeta;
   latestRollback?: OpsEventMeta | null;
 }) {
+  const governance = derivePublishGovernanceState({ published, latestRollback });
   return (
     <div className="space-y-4">
+      <div className={`rounded-xl border p-3 ${governanceToneClass(governance.tone)}`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm font-medium">Governance state</p>
+          <span className="rounded border border-current/20 px-2 py-0.5 text-xs">{governance.label}</span>
+        </div>
+        <p className="mt-2 text-xs">{governance.detail}</p>
+      </div>
       <div className="rounded-xl bg-zinc-50 p-4">
         <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Last publish</p>
         {published ? (

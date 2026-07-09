@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { listProducts } from "@/lib/commerce/products";
 import { formatMoney } from "@/lib/utils/money";
+import { AiConciergeEntry } from "@/components/ai/ai-concierge-entry";
+
+export const dynamic = "force-dynamic";
 
 export default async function ShopPage() {
   const productsPromise = listProducts();
@@ -18,6 +21,10 @@ export default async function ShopPage() {
         <Link className="text-sm underline underline-offset-4" href="/collection/first-time">
           Browse by need
         </Link>
+      </div>
+
+      <div className="mt-6">
+        <AiConciergeEntry placement="shop" />
       </div>
 
       <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

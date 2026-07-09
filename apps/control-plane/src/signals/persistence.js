@@ -67,7 +67,17 @@ function loadState() {
 function saveState(state) {
   const filePath = getFilePath();
   ensureParentDir(filePath);
-  fs.writeFileSync(filePath, JSON.stringify(state, null, 2));
+  let existing = {};
+  try {
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, "utf8");
+      existing = raw && raw.trim() ? JSON.parse(raw) : {};
+    }
+  } catch {
+    existing = {};
+  }
+  const merged = { ...existing, ...state };
+  fs.writeFileSync(filePath, JSON.stringify(merged, null, 2));
   return filePath;
 }
 

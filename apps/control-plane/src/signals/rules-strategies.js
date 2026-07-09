@@ -1,5 +1,5 @@
 function rateLabel(def) {
-  return def?.rate === "atc" ? "ATC" : "CTA";
+  return def?.rate === "atc" ? "ATC" : def?.rate === "purchase" ? "PURCHASE" : "CTA";
 }
 
 function lowRateStrategy(def, currentConfig, ruleStats) {
@@ -8,7 +8,7 @@ function lowRateStrategy(def, currentConfig, ruleStats) {
   const label = rateLabel(def);
 
   if (quality === "risky") {
-    const maxRateStep = def?.rate === "atc" ? 0.001 : 0.002;
+    const maxRateStep = def?.rate === "atc" ? 0.001 : def?.rate === "purchase" ? 0.001 : 0.002;
     return {
       suggestedConfig: {
         ...base,
@@ -100,7 +100,7 @@ function getRuleStrategy(def) {
   if (!def) return null;
   const custom = createCustomStrategy(def.ruleId, def);
   if (custom) return custom;
-  if (def.kind === "low-rate" && (def.rate === "cta" || def.rate === "atc")) {
+  if (def.kind === "low-rate" && (def.rate === "cta" || def.rate === "atc" || def.rate === "purchase")) {
     return {
       buildProposalSuggestion(currentConfig, ruleStats) {
         return lowRateStrategy(def, currentConfig, ruleStats);

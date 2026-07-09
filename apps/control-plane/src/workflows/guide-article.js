@@ -64,9 +64,36 @@ function planGuideArticle({ targetId }) {
   };
 }
 
-function generateGuideArticleDraft({ targetId }) {
+function generateGuideArticleDraft({ targetId, recommendation } = {}) {
   const plan = planGuideArticle({ targetId });
   if (!plan) return null;
+
+  const geoMode = recommendation?.ruleId === "thin-content" || recommendation?.context?.gapType === "thin_content";
+  const answerFirstIntro = geoMode
+    ? [
+        "结论先说：第一次购买不要先背参数，先按场景（隐私/连接/上手门槛）把范围缩小到 1–2 个更合适的集合和商品。",
+        "适合谁：第一次购买、预算有限、希望先用简单判断路径避免买错的人。 不适合谁：已经明确知道自己要哪种刺激方式、只想对比极限参数的人。",
+      ]
+    : [];
+
+  const structuredData = [
+    {
+      "@context": "https://schema.org",
+      "@type": "Article",
+      headline: plan.target.title,
+      description: geoMode
+        ? "结论前置的 buying guide，帮助第一次购买者按场景、隐私与连接快速缩小范围。"
+        : "给第一次购买者的 buying guide，帮助按场景、隐私与连接缩小范围。",
+    },
+    {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Guides", item: "/guides" },
+        { "@type": "ListItem", position: 2, name: plan.target.title, item: `/guides/${plan.target.id}` },
+      ],
+    },
+  ];
 
   return {
     workflow: "guide-article",
@@ -75,30 +102,58 @@ function generateGuideArticleDraft({ targetId }) {
     draft: {
       slug: plan.target.id,
       title: plan.target.title,
-      excerpt: "从场景、隐私、连接与清洁四个维度，帮助第一次购买者缩小范围，并继续进入更合适的商品与集合页。",
-      heroTitle: "第一次买，不先背参数，先按场景缩小范围",
-      heroSummary:
-        "如果你更在意隐私、连接、收纳和第一次上手门槛，这篇 guide 会先给判断路径，再告诉你下一步应该看哪类 collection、product 与 FAQ。",
+      excerpt: geoMode
+        ? "给第一次购买者的快速判断路径：先按场景缩小范围，再用隐私、连接与清洁门槛做二次确认，最后进入对应 collection / product / FAQ 完成决定。"
+        : "从场景、隐私、连接与清洁四个维度，帮助第一次购买者缩小范围，并继续进入更合适的商品与集合页。",
+      heroTitle: geoMode ? "第一次买怎么选：先按场景缩小范围" : "第一次买，不先背参数，先按场景缩小范围",
+      heroSummary: geoMode
+        ? "这篇 guide 先给结论与适用人群，再给三步筛选法，并把你带到对应的 collection、product 与 FAQ，方便继续比较和下单。"
+        : "如果你更在意隐私、连接、收纳和第一次上手门槛，这篇 guide 会先给判断路径，再告诉你下一步应该看哪类 collection、product 与 FAQ。",
       body: [
+        ...answerFirstIntro,
         "先判断自己更在意哪一类场景：第一次购买、隐私优先、情侣互动，还是 App 控制与连接稳定性。这样比一开始就比较参数更容易缩小范围。",
         "如果你是第一次买，优先看上手门槛、清洁方式和隐私感受，而不是先追求复杂功能。这样能更快排除不适合自己的类型。",
+        geoMode
+          ? "三步筛选法：1) 先选一个最接近的 collection；2) 在 collection 里选 1–2 个商品进入商品页；3) 用 FAQ 把噪音、清洁、连接这些最后的疑虑补齐。"
+          : null,
         "接下来建议进入 first-time collection，再结合商品页 FAQ 继续判断噪音、清洁和连接问题，避免在 guide 里停住不动。",
-      ],
-      toc: ["先按场景选", "第一次买先看什么", "下一步看哪个页面"],
+      ].filter(Boolean),
+      toc: geoMode
+        ? ["结论与适用人群", "先按场景选", "第一次买先看什么", "三步筛选法", "下一步看哪个页面"]
+        : ["先按场景选", "第一次买先看什么", "下一步看哪个页面"],
       relatedProductSlugs: ["kokocang-x"],
       relatedCollectionSlugs: ["first-time"],
       faqIds: ["faq"],
       seo: {
-        title: "第一次买怎么选｜从场景、隐私与连接开始判断",
-        description: "给第一次购买者的 buying guide：先按场景缩小范围，再进入 collection、product 和 FAQ 做下一步判断。",
+        title: geoMode ? "第一次买怎么选：三步筛选法（场景/隐私/连接）" : "第一次买怎么选｜从场景、隐私与连接开始判断",
+        description: geoMode
+          ? "AI 友好的 buying guide：结论前置 + 适用人群 + 三步筛选法，帮助第一次购买者快速缩小范围并进入对应 collection / product / FAQ。"
+          : "给第一次购买者的 buying guide：先按场景缩小范围，再进入 collection、product 和 FAQ 做下一步判断。",
         keywords: ["第一次买怎么选", "buying guide", "first-time collection"],
       },
+      schemaHints: ["Article", "BreadcrumbList", ...(geoMode ? ["HowTo"] : [])],
+      structuredData: geoMode
+        ? [
+            ...structuredData,
+            {
+              "@context": "https://schema.org",
+              "@type": "HowTo",
+              name: "第一次购买三步筛选法",
+              step: [
+                { "@type": "HowToStep", name: "选择一个最接近的 collection" },
+                { "@type": "HowToStep", name: "进入 collection 后筛到 1–2 个商品" },
+                { "@type": "HowToStep", name: "用 FAQ 补齐最后疑虑再决定" },
+              ],
+            },
+          ]
+        : structuredData,
     },
     authoringNotes: [
       "每段先给结论，再给判断依据与下一步动作。",
       "避免医疗、功效或绝对承诺表达。",
       "让 guide 成为站内流转入口，而不是孤立文章。",
-    ],
+      geoMode ? "在前两段明确给出可被引用的结论句，便于 GEO 场景的摘要与引用。" : null,
+    ].filter(Boolean),
   };
 }
 
@@ -227,4 +282,3 @@ module.exports = {
   publishGuideArticleDraft,
   rollbackGuideArticle,
 };
-

@@ -4,9 +4,13 @@ import {
   createPreview,
   generateOpsDraft,
   getOpsAuthStatus,
+  getRecommendations,
   getOpsTargetDetail,
+  listRepoChanges,
+  listRuleTuningProposals,
   publishOpsDraft,
   revokePreview,
+  resolveRecommendation,
   reviewOpsDraft,
   rollbackOpsTarget,
   submitOpsDraft,
@@ -14,11 +18,74 @@ import {
 } from "@/lib/control-plane/ops";
 import { getDiffSections } from "@/lib/control-plane/ops-diff";
 import { PublishResultPanel } from "../../../components/publish-result-panel";
+import { GovernanceBadge, governanceToneClass, proposalStatusMeta, repoChangeMeta } from "../../../components/governance-ui";
 
 type Props = {
   params: Promise<{ targetType: string; targetId: string }>;
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
+
+function deriveTargetGovernanceState({
+  activeDraft,
+  latestPublishedOpsDraft,
+  latestRollbackEvent,
+}: {
+  activeDraft: any;
+  latestPublishedOpsDraft: any;
+  latestRollbackEvent: any;
+}) {
+  const verificationLevel = latestPublishedOpsDraft?.published?.verification?.level ?? null;
+  const rollbackReason = latestRollbackEvent?.triggerReason ?? null;
+  if (latestRollbackEvent && (latestRollbackEvent.trigger === "auto" || rollbackReason === "verification-warning-threshold")) {
+    return { label: "暂停发布中", tone: "warning", detail: "最近发生自动回退，先确认根因和修复方案，再继续发布。" };
+  }
+  if (verificationLevel === "blocked") {
+    return { label: "需要立即处理", tone: "critical", detail: "最新发布校验被 blocked，必须先修复问题后再发布。" };
+  }
+  if (activeDraft?.status === "needs_review") {
+    return { label: "需要立即审核", tone: "ready", detail: "当前 draft 已提交，等待内容审核。" };
+  }
+  if (activeDraft?.status === "approved") {
+    return { label: "需要立即处理", tone: "critical", detail: "当前 draft 已审核通过，建议尽快完成发布或继续后续处理。" };
+  }
+  if (verificationLevel === "warning") {
+    return { label: "可观察后重发", tone: "progress", detail: "最近发布有 warning，可继续观察，但下次发布前应确认问题已收敛。" };
+  }
+  return { label: "继续排查", tone: "warning", detail: "当前没有明确的发布治理信号，先结合 audit 与 recommendation 继续判断。" };
+}
+
+function repoLaneHref(targetId: string) {
+  const params = new URLSearchParams();
+  params.set("type", "faq");
+  params.set("q", targetId);
+  return `/ops?${params.toString()}#repo-publish-queue`;
+}
+
+function recommendationGovernance(rec: any, proposal: any, repoChange: any) {
+  const repoStep = String(repoChange?.recommendedNextStep?.code || "");
+  if (proposal?.status === "draft" || repoStep === "ready_for_review") {
+    return { label: "需要立即审核", tone: "ready", detail: "这条 recommendation 已经形成提案或进入 review 阶段。", actionLabel: "Open proposal" };
+  }
+  if (
+    rec.ruleId === "publish-verification-followup" ||
+    rec.preparedDraft ||
+    rec.stale ||
+    proposal?.status === "approved" ||
+    ["auto_revert_ready", "investigate_ci"].includes(repoStep) ||
+    rec.severity === "critical"
+  ) {
+    return { label: "需要立即处理", tone: "critical", detail: "这条 recommendation 已经进入修复或阻断处理阶段。", actionLabel: "Handle now" };
+  }
+  if (["blocked_auto_merge_policy", "blocked_revert_policy"].includes(repoStep)) {
+    return { label: "暂停发布中", tone: "warning", detail: "相关 repo change 被策略门控拦住，先处理策略或人工确认。", actionLabel: "Inspect policy block" };
+  }
+  if (rec.status === "in_progress" || ["wait_ci", "wait_ci_start", "ready_auto_merge"].includes(repoStep)) {
+    return { label: "等待外部结果", tone: "progress", detail: "这条 recommendation 已进入处理中，先等待 review / CI / merge 结果。", actionLabel: "Track progress" };
+  }
+  return { label: "继续排查", tone: "warning", detail: "当前还没有形成明确处理链，先看 audit、signals 与 recommendation context。", actionLabel: "Investigate" };
+}
+
+// proposalStatusMeta / repoChangeMeta 已抽到共享组件 `governance-ui.tsx`
 
 export default async function OpsFaqDetailPage({ params, searchParams }: Props) {
   const { targetType, targetId } = await params;
@@ -35,13 +102,31 @@ export default async function OpsFaqDetailPage({ params, searchParams }: Props) 
   const latestPublished = detail.publishedDrafts[0] ?? null;
   const latestPublishedOpsDraft = drafts.find((d) => d.status === "published" && d.published) ?? null;
   const latestRollbackEvent = detail.events.find((event) => event.action === "rollback") ?? null;
+  const governanceState = deriveTargetGovernanceState({ activeDraft, latestPublishedOpsDraft, latestRollbackEvent });
   const diffSections = getDiffSections("faq", latestPublished?.payload, activeDraft?.payload);
   const previewTokens = detail.previewTokens.filter((token) => !activeDraft || token.draftId === activeDraft.id);
+  const recommendations = await getRecommendations({ status: "open,in_progress", targetType: "faq", targetId });
+  const [proposalData, repoChangeData] = await Promise.all([
+    listRuleTuningProposals({ limit: 20 }),
+    listRepoChanges({ targetType: "faq", targetId, limit: 5 }),
+  ]);
+  const relatedProposal =
+    proposalData.items
+      .filter((item) => item.type === "incident_followup" && item.targetType === "faq" && item.targetId === targetId)
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))[0] ?? null;
+  const relatedRepoChange = repoChangeData.items[0] ?? null;
+  const proposalByRecommendationId = new Map(
+    proposalData.items.filter((item) => item.linkedRecommendationId).map((item) => [item.linkedRecommendationId, item]),
+  );
+  const repoChangeByRecommendationId = new Map(
+    repoChangeData.items.filter((item) => item.linkedRecommendationId).map((item) => [item.linkedRecommendationId, item]),
+  );
   const authStatus = await getOpsAuthStatus();
   const canManageContent = authStatus.capabilities.includes("manage_content");
   const canPreviewContent = authStatus.capabilities.includes("preview_content");
   const canReviewContent = authStatus.capabilities.includes("review_content");
   const canPublishContent = authStatus.capabilities.includes("publish_content");
+  const canManageRecommendations = authStatus.capabilities.includes("manage_recommendations");
   const basePath = `/ops/faq/${targetType}/${targetId}`;
   const detailPath = (extra?: Record<string, string | undefined>) => {
     const params = new URLSearchParams();
@@ -253,6 +338,21 @@ export default async function OpsFaqDetailPage({ params, searchParams }: Props) 
     }
   }
 
+  async function onResolveRecommendation(formData: FormData) {
+    "use server";
+    const recommendationId = String(formData.get("id") ?? "");
+    const status = String(formData.get("status") ?? "") as "in_progress" | "resolved" | "dismissed";
+    const note = String(formData.get("note") ?? "").trim();
+    if (!recommendationId || !status) return;
+    try {
+      await resolveRecommendation(recommendationId, { status, note: note || undefined });
+      redirect(`/ops/faq/${targetType}/${targetId}${activeDraft ? `?draft=${activeDraft.id}` : ""}#recommendations`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Resolve recommendation failed";
+      redirect(detailPath({ err: message }));
+    }
+  }
+
   async function onMoveItem(formData: FormData) {
     "use server";
     if (!activeDraft) return;
@@ -328,7 +428,7 @@ export default async function OpsFaqDetailPage({ params, searchParams }: Props) 
         </div>
       </div>
 
-      <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
+      <div id="governance-state" className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-sm font-medium text-zinc-900">Action permissions</p>
@@ -346,6 +446,31 @@ export default async function OpsFaqDetailPage({ params, searchParams }: Props) 
           {!canReviewContent ? <p>当前角色不能 Approve / Request changes。</p> : null}
           {!canPreviewContent ? <p>当前角色不能 Preview / Revoke preview。</p> : null}
           {!canPublishContent ? <p>当前角色不能 Publish / Rollback。</p> : null}
+        </div>
+        <div className={`mt-4 rounded-xl border p-3 ${governanceToneClass(governanceState.tone)}`}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-medium">Governance state</p>
+            <span className="rounded border border-current/20 px-2 py-0.5 text-xs">{governanceState.label}</span>
+          </div>
+          <p className="mt-2 text-xs">{governanceState.detail}</p>
+          <div className="mt-3 flex flex-wrap gap-3 text-xs">
+            {relatedProposal ? (
+              <Link className="underline" href={`/ops/proposals/${relatedProposal.id}`}>
+                Open proposal
+              </Link>
+            ) : null}
+            {relatedRepoChange ? (
+              <Link className="underline" href={repoLaneHref(targetId)}>
+                Open repo change lane
+              </Link>
+            ) : null}
+            <Link className="underline" href={`/ops/audit?targetType=faq&targetId=${encodeURIComponent(id)}`}>
+              Open audit
+            </Link>
+            <Link className="underline" href="/ops/monitoring">
+              Open monitoring
+            </Link>
+          </div>
         </div>
       </div>
 
@@ -433,6 +558,142 @@ export default async function OpsFaqDetailPage({ params, searchParams }: Props) 
             </>
           ) : (
             <p className="mt-4 text-sm text-zinc-600">No published content yet.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-6">
+        <div id="recommendations" className="rounded-2xl border border-zinc-200 bg-white p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-medium text-zinc-900">Recommendations</p>
+            <span className={`rounded border px-2 py-0.5 text-xs ${governanceToneClass(governanceState.tone)}`}>{governanceState.label}</span>
+          </div>
+          <p className="mt-2 text-xs text-zinc-500">当 signal 命中规则时，会生成一条 FAQ 优化建议。</p>
+          {recommendations.items.length ? (
+            <div className="mt-4 space-y-3">
+              {recommendations.items.slice(0, 5).map((rec) => {
+                const linkedProposal = proposalByRecommendationId.get(rec.id) ?? null;
+                const linkedRepoChange = repoChangeByRecommendationId.get(rec.id) ?? null;
+                const recGovernance = recommendationGovernance(rec, linkedProposal, linkedRepoChange);
+                return (
+                  <div key={rec.id} className="rounded-xl border border-zinc-200 p-3">
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <GovernanceBadge label={recGovernance.label} tone={recGovernance.tone} />
+                        <span className="rounded bg-zinc-100 px-2 py-0.5 text-xs text-zinc-700">{recGovernance.actionLabel}</span>
+                      </div>
+                      {linkedProposal ? (
+                        <Link className="text-xs underline" href={`/ops/proposals/${linkedProposal.id}`}>
+                          Open proposal
+                        </Link>
+                      ) : linkedRepoChange ? (
+                        <Link className="text-xs underline" href={repoLaneHref(targetId)}>
+                          Open repo change lane
+                        </Link>
+                      ) : rec.preparedDraft ? (
+                        <Link className="text-xs underline" href={`/ops/faq/${targetType}/${targetId}?draft=${rec.preparedDraft.draftId}`}>
+                          Open prepared draft
+                        </Link>
+                      ) : (
+                        <Link className="text-xs underline" href={`/ops/audit?targetType=faq&targetId=${encodeURIComponent(id)}`}>
+                          Open audit
+                        </Link>
+                      )}
+                    </div>
+                    <p className="mb-2 text-xs text-zinc-500">{recGovernance.detail}</p>
+                    {linkedProposal || linkedRepoChange || rec.preparedDraft ? (
+                      <div className="mb-2 rounded-lg bg-zinc-50 p-2">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          {proposalStatusMeta(linkedProposal) ? (
+                            <GovernanceBadge
+                              label={proposalStatusMeta(linkedProposal)!.label}
+                              tone={proposalStatusMeta(linkedProposal)!.tone}
+                            />
+                          ) : null}
+                          {repoChangeMeta(linkedRepoChange) ? (
+                            <GovernanceBadge label={repoChangeMeta(linkedRepoChange)!.label} tone={repoChangeMeta(linkedRepoChange)!.tone} />
+                          ) : null}
+                          {rec.preparedDraft ? (
+                            <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-emerald-800">
+                              draft · {rec.preparedDraft.draftId}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                    <p className="text-sm font-medium text-zinc-900">{rec.ruleId}</p>
+                    <p className="mt-1 text-xs text-zinc-500">{rec.createdAt}</p>
+                    {rec.status === "in_progress" && rec.startedAt ? (
+                      <p className="mt-1 text-xs text-zinc-500">
+                        已自动进入处理中：{rec.startedAt}
+                        {rec.startedBy ? ` · ${rec.startedBy}` : ""}
+                      </p>
+                    ) : null}
+                    <p className="mt-2 text-sm text-zinc-700">{rec.reason}</p>
+                    <p className="mt-2 text-xs text-zinc-500">
+                      Suggested workflow: <code className="rounded bg-zinc-100 px-1">{rec.suggestedWorkflow}</code>
+                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {rec.stale ? <span className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-700">stale</span> : null}
+                      {rec.severity ? <span className="rounded bg-zinc-100 px-2 py-0.5 text-xs text-zinc-700">{rec.severity}</span> : null}
+                      <span className="rounded bg-zinc-100 px-2 py-0.5 text-xs text-zinc-700">{rec.status}</span>
+                    </div>
+                    {rec.preparedDraft ? (
+                      <p className="mt-2 text-xs text-emerald-700">
+                        Draft ready:{" "}
+                        <Link className="underline underline-offset-4" href={`/ops/faq/${targetType}/${targetId}?draft=${rec.preparedDraft.draftId}`}>
+                          <code className="rounded bg-emerald-50 px-1">{rec.preparedDraft.draftId}</code>
+                        </Link>
+                        {" · "}
+                        {rec.preparedDraft.reused ? "reused existing draft" : "prepared automatically"}
+                      </p>
+                    ) : null}
+                    {rec.preparedDraftError ? <p className="mt-2 text-xs text-rose-700">{rec.preparedDraftError}</p> : null}
+                    {typeof rec.occurrences === "number" ? (
+                      <p className="mt-2 text-xs text-zinc-500">
+                        近期开启次数：{rec.occurrences}
+                        {rec.lastSeenAt ? ` · 最近触发：${rec.lastSeenAt}` : ""}
+                      </p>
+                    ) : null}
+                    {rec.effectivePriorityReason || rec.priorityReason ? (
+                      <p className="mt-2 text-xs text-zinc-500">{rec.effectivePriorityReason ?? rec.priorityReason}</p>
+                    ) : null}
+                    {rec.context?.actionHints?.length ? <p className="mt-2 text-xs text-zinc-500">建议：{rec.context.actionHints.join("；")}</p> : null}
+                    {rec.successPattern ? <p className="mt-2 text-xs text-zinc-500">成功模式：{rec.successPattern.summary}</p> : null}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {rec.preparedDraft ? (
+                        <Link className="rounded-lg border border-zinc-200 px-3 py-1.5 text-sm" href={`/ops/faq/${targetType}/${targetId}?draft=${rec.preparedDraft.draftId}`}>
+                          Open prepared draft
+                        </Link>
+                      ) : (
+                        <form action={onGenerate}>
+                          <button disabled={!canManageContent} className="rounded-lg border border-zinc-200 px-3 py-1.5 text-sm disabled:opacity-50" type="submit">
+                            Generate draft
+                          </button>
+                        </form>
+                      )}
+                      <form action={onResolveRecommendation} className="flex flex-wrap gap-2">
+                        <input type="hidden" name="id" value={rec.id} />
+                        <input name="note" placeholder="处理备注（可选）" className="rounded-lg border border-zinc-200 px-3 py-1.5 text-sm" />
+                        {rec.status !== "in_progress" ? (
+                          <button disabled={!canManageRecommendations} className="rounded-lg border border-zinc-200 px-3 py-1.5 text-sm disabled:opacity-50" name="status" value="in_progress" type="submit">
+                            Start
+                          </button>
+                        ) : null}
+                        <button disabled={!canManageRecommendations} className="rounded-lg border border-zinc-200 px-3 py-1.5 text-sm disabled:opacity-50" name="status" value="resolved" type="submit">
+                          Resolve
+                        </button>
+                        <button disabled={!canManageRecommendations} className="rounded-lg border border-zinc-200 px-3 py-1.5 text-sm disabled:opacity-50" name="status" value="dismissed" type="submit">
+                          Dismiss
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-zinc-600">No open recommendations.</p>
           )}
         </div>
       </div>

@@ -7,10 +7,13 @@ function computeRates(metrics) {
   const views = Math.max(1, normalizeNumber(metrics?.views));
   const ctaClicks = normalizeNumber(metrics?.ctaClicks);
   const addToCart = normalizeNumber(metrics?.addToCart);
+  const purchases = normalizeNumber(metrics?.purchases);
   return {
     ctaRate: ctaClicks / views,
     addToCartRate: addToCart / views,
     postClickAtcRate: addToCart / Math.max(1, ctaClicks),
+    purchaseRate: purchases / views,
+    postCartPurchaseRate: purchases / Math.max(1, addToCart),
   };
 }
 

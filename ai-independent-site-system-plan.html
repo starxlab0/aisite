@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI 独立站系统实施计划</title>
+    <style>
+      :root {
+        --bg: #0b0c10;
+        --card: #111319;
+        --text: #e8e9ef;
+        --muted: #a8adbd;
+        --line: rgba(232, 233, 239, 0.12);
+        --accent: #7c5cff;
+        --good: #33d17a;
+        --warn: #ffbe6f;
+        --bad: #ff6b6b;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      }
+      body {
+        margin: 0;
+        background: radial-gradient(1200px 800px at 20% 0%, rgba(124, 92, 255, 0.18), transparent 55%),
+          radial-gradient(900px 700px at 90% 20%, rgba(51, 209, 122, 0.12), transparent 55%),
+          var(--bg);
+        color: var(--text);
+        font-family: var(--sans);
+        line-height: 1.55;
+      }
+      .wrap {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 48px 20px 72px;
+      }
+      header {
+        display: grid;
+        gap: 10px;
+        margin-bottom: 22px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 28px;
+        letter-spacing: 0.2px;
+      }
+      .sub {
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 6px;
+      }
+      .chip {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--muted);
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+      }
+      .grid {
+        display: grid;
+        gap: 14px;
+      }
+      @media (min-width: 980px) {
+        .grid.cols2 {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+      .card {
+        border: 1px solid var(--line);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+        border-radius: 16px;
+        padding: 16px 16px;
+      }
+      h2 {
+        margin: 0 0 10px 0;
+        font-size: 16px;
+        letter-spacing: 0.2px;
+      }
+      h3 {
+        margin: 18px 0 10px 0;
+        font-size: 14px;
+        color: var(--text);
+      }
+      p {
+        margin: 8px 0;
+        color: var(--text);
+      }
+      ul {
+        margin: 8px 0 0 18px;
+        padding: 0;
+        color: var(--text);
+      }
+      li {
+        margin: 6px 0;
+        color: var(--text);
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .mono {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: #d9dbff;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        padding: 2px 6px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 10px;
+        overflow: hidden;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+      }
+      .table th,
+      .table td {
+        padding: 10px 10px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+        text-align: left;
+        font-size: 13px;
+      }
+      .table th {
+        color: var(--muted);
+        font-weight: 600;
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 999px;
+        padding: 4px 10px;
+        border: 1px solid var(--line);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--muted);
+      }
+      .dot.good {
+        background: var(--good);
+      }
+      .dot.warn {
+        background: var(--warn);
+      }
+      .dot.bad {
+        background: var(--bad);
+      }
+      .hr {
+        height: 1px;
+        background: var(--line);
+        margin: 16px 0;
+      }
+      .callout {
+        border-left: 3px solid var(--accent);
+        padding: 10px 12px;
+        background: rgba(124, 92, 255, 0.06);
+        border-radius: 10px;
+        border: 1px solid rgba(124, 92, 255, 0.16);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>AI 独立站系统实施计划</h1>
+        <div class="sub">
+          范围：全站（前台 Next.js + Medusa 交易 + Sanity 内容 + Control-plane AI 编排/运营）
+          <span class="muted">· 版本：v0.1（可按进展滚动更新）</span>
+        </div>
+        <div class="chips">
+          <div class="chip">apps/web</div>
+          <div class="chip">apps/medusa</div>
+          <div class="chip">apps/control-plane</div>
+          <div class="chip">Sanity 内容</div>
+          <div class="chip">Signals / Recommendations</div>
+        </div>
+      </header>
+
+      <div class="grid cols2">
+        <div class="card">
+          <h2>目标与交付</h2>
+          <p>以“可稳定卖货 + AI 能持续优化”为第一优先级：站点能完成真实交易闭环，且关键转化链路可观测、可迭代。</p>
+          <div class="hr"></div>
+          <ul>
+            <li>交易主链跑通：<code>/shop</code>、<code>/product</code>、<code>/cart</code>、<code>/checkout</code>、<code>/order</code> 全链路真实数据可用。</li>
+            <li>内容入口转化化：guides / app-control / quiz 形成明确导购路径。</li>
+            <li>AI 控制平面接入“结果型信号”：不仅看行为（CTR），也能看下单、弃单等更贴近业务结果的指标。</li>
+            <li>Ops 总控视图可用：能直接看到“待决 / 待审 / 执行中 / 观察中 / 风险未收敛”。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h2>关键假设</h2>
+          <ul>
+            <li>Sanity 和 Medusa 的生产配置（项目 ID、token、支付、库存）由外部环境提供；计划中只负责接入与验证。</li>
+            <li>第一阶段不追求评价体系、搜索、多语言、会员等扩展功能。</li>
+            <li>AI 自动执行维持“人授权”的边界：自动起草、自动准备、自动追踪；合并/发布/回滚仍需明确权限节点。</li>
+          </ul>
+          <div class="hr"></div>
+          <div class="callout">
+            <div class="badge"><span class="dot warn"></span>风险提示</div>
+            <p class="muted" style="margin-top: 8px">
+              当前 AI 治理能力进展领先于电商主链成熟度。计划优先把交易主链打稳，否则 AI 的优化会落在半成品链路上。
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid" style="margin-top: 14px">
+        <div class="card">
+          <h2>实施分期（建议 4 周节奏）</h2>
+          <table class="table">
+            <thead>
+              <tr>
+                <th style="width: 120px">阶段</th>
+                <th>目标</th>
+                <th style="width: 320px">主要交付</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <div class="badge"><span class="dot good"></span>第 0 周</div>
+                  <div class="muted" style="margin-top: 6px">基线稳定</div>
+                </td>
+                <td>把本地/联调环境跑稳，避免后续被环境噪音打断。</td>
+                <td>
+                  <ul>
+                    <li>统一启动：<code>npm run dev:all</code></li>
+                    <li>web build 稳定通过（依赖完整）</li>
+                    <li>Medusa 本地 seed 可复现</li>
+                  </ul>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="badge"><span class="dot warn"></span>第 1 周</div>
+                  <div class="muted" style="margin-top: 6px">交易主链</div>
+                </td>
+                <td>去掉 mock fallback 的关键路径，确保商品/价格/购物车/订单的真实读取与写入。</td>
+                <td>
+                  <ul>
+                    <li><code>/shop</code>、<code>/product</code> 使用真实 Medusa 数据</li>
+                    <li>cart / checkout 基本可用（至少 sandbox）</li>
+                    <li>订单查询页能展示真实订单状态</li>
+                  </ul>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="badge"><span class="dot warn"></span>第 2 周</div>
+                  <div class="muted" style="margin-top: 6px">转化入口</div>
+                </td>
+                <td>把内容与 AI 入口变成导购入口：quiz 输出可落到产品/套装，guides 与专题页能引导到购买链路。</td>
+                <td>
+                  <ul>
+                    <li>quiz → 推荐商品/collection/bundle 的固定路由</li>
+                    <li>guides → 商品卡片/CTA 联动</li>
+                    <li>app-control / bundles 页面与真实商品绑定</li>
+                  </ul>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="badge"><span class="dot good"></span>第 3 周</div>
+                  <div class="muted" style="margin-top: 6px">AI 接结果</div>
+                </td>
+                <td>把 signals 从“行为信号”扩到“结果信号”，让控制平面能对转化与弃单提出建议并形成治理对象。</td>
+                <td>
+                  <ul>
+                    <li>新增订单/支付/弃单类 signals</li>
+                    <li>至少 1 条非 AI concierge 的第二条样板线接入治理壳</li>
+                    <li>monitoring 用 group 统一展示多线治理状态</li>
+                  </ul>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="muted" style="margin-top: 10px">
+            说明：4 周是建议节奏。若资源有限，可以把第 2、3 周合并，但不要把“交易主链”往后挪。
+          </p>
+        </div>
+      </div>
+
+      <div class="grid cols2" style="margin-top: 14px">
+        <div class="card">
+          <h2>工作流拆分</h2>
+          <h3>交易主链</h3>
+          <ul>
+            <li><span class="mono">apps/web/src/lib/commerce/*</span>：真实 Medusa 数据读写（products/cart/checkout/orders）。</li>
+            <li><span class="mono">apps/web/src/app/(shop)/*</span>：页面与错误态/空态打磨。</li>
+            <li><span class="mono">apps/medusa/apps/backend</span>：seed/migrate/本地联调稳定性。</li>
+          </ul>
+          <h3 style="margin-top: 16px">内容入口转化</h3>
+          <ul>
+            <li><span class="mono">apps/web/src/app/(marketing)/*</span>：专题/指南导购路径。</li>
+            <li><span class="mono">apps/web/src/app/(shop)/quiz/*</span>：quiz 输出与商品/套装路由。</li>
+            <li><span class="mono">apps/web/src/lib/seo/*</span>：SEO 与导购组件共存。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h2>AI 与运营（全站口径）</h2>
+          <h3>信号</h3>
+          <ul>
+            <li>从 <code>view/cta/add_to_cart</code> 扩到 <code>checkout_start</code>、<code>payment_success</code>、<code>checkout_dropoff</code> 等。</li>
+            <li>让 signals 能覆盖“内容 → 商品 → 购物车 → 订单”的路径归因。</li>
+          </ul>
+          <h3 style="margin-top: 16px">治理与平台化</h3>
+          <ul>
+            <li><span class="mono">apps/control-plane/src/signals/governance-patterns/*</span>：治理壳（观测窗口/复判）。</li>
+            <li><span class="mono">apps/control-plane/src/ops/monitoring.js</span>：总控台 groups 结构。</li>
+            <li><span class="mono">apps/web/src/app/(ops)/ops/monitoring</span>：统一渲染各条治理线。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="grid" style="margin-top: 14px">
+        <div class="card">
+          <h2>完成标准</h2>
+          <ul>
+            <li>从首页/内容入口进入，用户能完成一次从商品浏览到下单的完整链路。</li>
+            <li>关键路径埋点可复现：能在 monitoring 中看到转化链路的主要信号。</li>
+            <li>Ops 能在一个页面（monitoring + proposal）完成“发现 → 建议 → 执行 → 观察 → 结论”的闭环阅读。</li>
+            <li>至少两条业务线使用同一套治理骨架（AI concierge + 第二条线）。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

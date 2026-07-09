@@ -1,4 +1,4 @@
-import { getMedusaBaseUrl, medusaFetch } from "@/lib/commerce/http";
+import { getCommerceMode, getMedusaBaseUrl, medusaFetch } from "@/lib/commerce/http";
 import type { Cart } from "@/types/cart";
 
 type MedusaCartResponse = {
@@ -74,7 +74,7 @@ export function createEmptyCart(currency = "CNY"): Cart {
 }
 
 export function isMedusaEnabled() {
-  return Boolean(getMedusaBaseUrl());
+  return getCommerceMode() !== "mock" && Boolean(getMedusaBaseUrl());
 }
 
 export async function createCart(input: CreateCartInput = {}): Promise<Cart> {

@@ -19,6 +19,11 @@ function emptyState() {
     drafts: [],
     events: [],
     previewTokens: [],
+    repoChanges: [],
+    alerts: [],
+    customerNotifications: [],
+    supportCases: [],
+    seoMetrics: [],
   };
 }
 
@@ -37,6 +42,11 @@ function loadState() {
       drafts: Array.isArray(parsed.drafts) ? parsed.drafts : [],
       events: Array.isArray(parsed.events) ? parsed.events : [],
       previewTokens: Array.isArray(parsed.previewTokens) ? parsed.previewTokens : [],
+      repoChanges: Array.isArray(parsed.repoChanges) ? parsed.repoChanges : [],
+      alerts: Array.isArray(parsed.alerts) ? parsed.alerts : [],
+      customerNotifications: Array.isArray(parsed.customerNotifications) ? parsed.customerNotifications : [],
+      supportCases: Array.isArray(parsed.supportCases) ? parsed.supportCases : [],
+      seoMetrics: Array.isArray(parsed.seoMetrics) ? parsed.seoMetrics : [],
     };
   } catch {
     return emptyState();
@@ -46,7 +56,17 @@ function loadState() {
 function saveState(state) {
   const filePath = getFilePath();
   ensureParentDir(filePath);
-  fs.writeFileSync(filePath, JSON.stringify(state, null, 2));
+  let existing = {};
+  try {
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, "utf8");
+      existing = raw && raw.trim() ? JSON.parse(raw) : {};
+    }
+  } catch {
+    existing = {};
+  }
+  const merged = { ...existing, ...state };
+  fs.writeFileSync(filePath, JSON.stringify(merged, null, 2));
   return filePath;
 }
 

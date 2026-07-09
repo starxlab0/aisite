@@ -9,6 +9,7 @@ const {
 const { generateFaqDraft, reviewFaqExpansionDraft } = require("../workflows/faq-expansion");
 
 const { createContentDraft, listDrafts, recordRollback } = require("../cms-adapters");
+const { generateGuideArticleDraft, reviewGuideArticleDraft } = require("../workflows/guide-article");
 const {
   createEvent,
   createOpsDraft,
@@ -22,6 +23,7 @@ function inferWorkflowForTargetType(targetType) {
   if (targetType === "product") return "product-rewrite";
   if (targetType === "collection") return "collection-rewrite";
   if (targetType === "faq") return "faq-expansion";
+  if (targetType === "guide") return "guide-article";
   return "unknown";
 }
 
@@ -61,35 +63,95 @@ function getEntityMeta(type, id) {
       targetPath: "/faq",
     };
   }
+  if (type === "guide") {
+    return {
+      schemaType: "guideArticleDraft",
+      entityType: "guide-article",
+      targetType: "guide",
+      targetId: id,
+      targetPath: `/guides/${id}`,
+    };
+  }
   return null;
 }
 
-function buildInitialPayload(type, id) {
+function buildInitialPayload(type, id, recommendation = null) {
   if (type === "product") {
-    const generated = generateProductRewriteDraft({ targetId: id });
-    return generated?.draft ?? null;
+    const generated = generateProductRewriteDraft({ targetId: id, recommendation });
+    if (!generated) return null;
+    return {
+      ...generated.draft,
+      authoringNotes: generated.authoringNotes,
+    };
   }
   if (type === "collection") {
-    const generated = generateCollectionRewriteDraft({ targetId: id });
+    const generated = generateCollectionRewriteDraft({ targetId: id, recommendation });
     if (!generated) return null;
     return {
       hero: generated.draft.hero,
       sections: generated.draft.sections,
       internalLinks: generated.draft.internalLinks,
+      schemaHints: generated.draft.schemaHints,
+      structuredData: generated.draft.structuredData,
       authoringNotes: generated.authoringNotes,
     };
   }
   if (type === "faq") {
     const [faqTargetType, faqTargetId] = id.split(":");
-    const generated = generateFaqDraft({ targetType: faqTargetType, targetId: faqTargetId });
+    const generated = generateFaqDraft({ targetType: faqTargetType, targetId: faqTargetId, recommendation });
     if (!generated) return null;
     return {
       title: `${generated.target.title} FAQ Draft`,
       items: generated.draftItems,
+      schemaHints: generated.schemaHints,
+      structuredData: generated.structuredData,
+      authoringNotes: generated.authoringNotes,
+    };
+  }
+  if (type === "guide") {
+    const generated = generateGuideArticleDraft({ targetId: id, recommendation });
+    if (!generated) return null;
+    return {
+      slug: generated.draft.slug,
+      title: generated.draft.title,
+      excerpt: generated.draft.excerpt,
+      heroTitle: generated.draft.heroTitle,
+      heroSummary: generated.draft.heroSummary,
+      body: generated.draft.body,
+      toc: generated.draft.toc,
+      relatedProductSlugs: generated.draft.relatedProductSlugs,
+      relatedCollectionSlugs: generated.draft.relatedCollectionSlugs,
+      faqIds: generated.draft.faqIds,
+      seo: generated.draft.seo,
+      schemaHints: generated.draft.schemaHints,
+      structuredData: generated.draft.structuredData,
       authoringNotes: generated.authoringNotes,
     };
   }
   return null;
+}
+
+function draftPreparationPolicy(recommendation) {
+  const refDelta = Number(recommendation?.context?.referencePattern?.purchaseDeltaRate ?? 0);
+  if (["low-purchase-rate", "purchase-effect-followup"].includes(recommendation?.ruleId) && refDelta >= 0.002) {
+    return {
+      level: "priority",
+      reason: "purchase_pattern_policy",
+      forceRefresh: true,
+    };
+  }
+  if (["content-gap", "thin-content", "internal-link-gap"].includes(String(recommendation?.ruleId || ""))) {
+    return {
+      level: "standard",
+      reason: "seo_geo_prepare_policy",
+      forceRefresh: true,
+    };
+  }
+  return {
+    level: "standard",
+    reason: "default_prepare_policy",
+    forceRefresh: recommendation?.ruleId === "low-purchase-rate",
+  };
 }
 
 function findReusableOpsDraft({ type, targetType, targetId, workflow }) {
@@ -98,11 +160,11 @@ function findReusableOpsDraft({ type, targetType, targetId, workflow }) {
     .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))[0] ?? null;
 }
 
-function createOpsDraftInternal({ type, id, actor, extra = {} }) {
+function createOpsDraftInternal({ type, id, actor, extra = {}, recommendation = null }) {
   const meta = getEntityMeta(type, id);
   if (!meta) return null;
 
-  const payload = buildInitialPayload(type, id);
+  const payload = buildInitialPayload(type, id, recommendation);
   if (!payload) return null;
 
   const draft = createOpsDraft({
@@ -134,6 +196,7 @@ function runReview(type, id) {
     const [faqTargetType, faqTargetId] = id.split(":");
     return reviewFaqExpansionDraft({ targetType: faqTargetType, targetId: faqTargetId });
   }
+  if (type === "guide") return reviewGuideArticleDraft({ targetId: id });
   return null;
 }
 
@@ -154,6 +217,9 @@ async function computeNextContentRef(meta) {
   if (meta.entityType === "faq") {
     return `faq-${meta.targetType}-${meta.targetId}-v${nextVersion}`;
   }
+  if (meta.entityType === "guide-article") {
+    return `guide-${meta.targetId}-v${nextVersion}`;
+  }
   return `content-${meta.targetType}-${meta.targetId}-v${nextVersion}`;
 }
 
@@ -168,6 +234,7 @@ function prepareOpsDraftForRecommendation({ recommendation, actor = "ai:recommen
   if (!meta) return null;
 
   const workflow = recommendation.suggestedWorkflow || inferWorkflowForTargetType(type);
+  const prepPolicy = draftPreparationPolicy(recommendation);
   const existing = findReusableOpsDraft({
     type,
     targetType: meta.targetType,
@@ -176,23 +243,30 @@ function prepareOpsDraftForRecommendation({ recommendation, actor = "ai:recommen
   });
 
   if (existing) {
+    const refreshedPayload =
+      prepPolicy.forceRefresh && existing.autoPrepared
+        ? buildInitialPayload(type, id, recommendation) ?? existing.payload
+        : existing.payload;
     const sourceRecommendationIds = Array.from(
       new Set([...(Array.isArray(existing.sourceRecommendationIds) ? existing.sourceRecommendationIds : []), recommendation.id]),
     );
     const next = updateOpsDraft(existing.id, {
+      payload: refreshedPayload,
       autoPrepared: true,
       autoPreparedAt: new Date().toISOString(),
       sourceRecommendationIds,
       sourceContentRef: recommendation.contentRef ?? null,
       sourceRecommendationReason: recommendation.reason,
       autoPreparedContext: recommendation.context ?? null,
+      draftPreparationPriority: prepPolicy.level,
+      draftPreparationPolicy: prepPolicy.reason,
     });
     createEvent({
       actor,
       action: "prepare_recommendation_draft",
       target: { type, id },
       draftId: next.id,
-      note: `recommendation ${recommendation.id} reused existing draft`,
+      note: `recommendation ${recommendation.id} reused existing draft · ${prepPolicy.reason}`,
     });
     return {
       draftId: next.id,
@@ -200,6 +274,7 @@ function prepareOpsDraftForRecommendation({ recommendation, actor = "ai:recommen
       preparedAt: next.autoPreparedAt,
       reused: true,
       targetPath: next.targetPath,
+      priority: prepPolicy.level,
     };
   }
 
@@ -207,6 +282,7 @@ function prepareOpsDraftForRecommendation({ recommendation, actor = "ai:recommen
     type,
     id,
     actor,
+    recommendation,
     extra: {
       autoPrepared: true,
       autoPreparedAt: new Date().toISOString(),
@@ -214,6 +290,8 @@ function prepareOpsDraftForRecommendation({ recommendation, actor = "ai:recommen
       sourceContentRef: recommendation.contentRef ?? null,
       sourceRecommendationReason: recommendation.reason,
       autoPreparedContext: recommendation.context ?? null,
+      draftPreparationPriority: prepPolicy.level,
+      draftPreparationPolicy: prepPolicy.reason,
     },
   });
   if (!draft) return null;
@@ -223,7 +301,7 @@ function prepareOpsDraftForRecommendation({ recommendation, actor = "ai:recommen
     action: "prepare_recommendation_draft",
     target: { type, id },
     draftId: draft.id,
-    note: `recommendation ${recommendation.id} prepared a new draft`,
+    note: `recommendation ${recommendation.id} prepared a new draft · ${prepPolicy.reason}`,
   });
 
   return {
@@ -232,6 +310,7 @@ function prepareOpsDraftForRecommendation({ recommendation, actor = "ai:recommen
     preparedAt: draft.autoPreparedAt,
     reused: false,
     targetPath: draft.targetPath,
+    priority: prepPolicy.level,
   };
 }
 

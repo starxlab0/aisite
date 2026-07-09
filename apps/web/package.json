@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+    "dev": "node ./node_modules/next/dist/bin/next dev",
+    "build:installed": "node ./node_modules/next/dist/bin/next build",
+    "build": "npm ci --no-audit --no-fund && npm run build:installed",
+    "start": "node ./node_modules/next/dist/bin/next start",
+    "lint": "node ./node_modules/eslint/bin/eslint.js"
   },
   "dependencies": {
     "@sanity/client": "^7.23.0",

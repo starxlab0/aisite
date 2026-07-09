@@ -9,6 +9,7 @@ const {
   createSnapshotFromEvents,
   ingestSnapshot,
   listSnapshots,
+  getPurchaseDiagnostics,
   listRecommendations,
   listRecommendationRuleStats,
   resolveRecommendation,
@@ -16,6 +17,8 @@ const {
   getRuleTuningProposal,
   listRuleTuningProposals,
   transitionRuleTuningProposal,
+  syncIncidentFollowupProposalsForRecommendations,
+  maybeOpenAiConciergeDraftPullRequestForProposal,
 } = require("./store");
 const { getOpsAuthContext, requireOpsAdmin, requireOpsCapability } = require("../ops/auth");
 
@@ -67,7 +70,7 @@ async function handleSignalsRoute(req, res, url) {
       return true;
     }
 
-    if (!["view", "cta", "add_to_cart"].includes(eventType)) {
+    if (!["view", "cta", "add_to_cart", "purchase"].includes(eventType)) {
       sendJson(res, 400, errorEnvelope("Invalid eventType"));
       return true;
     }
@@ -177,6 +180,16 @@ async function handleSignalsRoute(req, res, url) {
     return true;
   }
 
+  // GET /signals/purchase-diagnostics?targetType=&targetId=&windowDays=
+  if (url.pathname === "/signals/purchase-diagnostics" && req.method === "GET") {
+    const targetType = url.searchParams.get("targetType") || undefined;
+    const targetId = url.searchParams.get("targetId") || undefined;
+    const windowDays = url.searchParams.get("windowDays") || undefined;
+    const data = getPurchaseDiagnostics({ targetType, targetId, windowDays });
+    sendJson(res, 200, okEnvelope(data));
+    return true;
+  }
+
   // GET /recommendations?status=&targetType=&targetId=
   if (url.pathname === "/recommendations" && req.method === "GET") {
     const statusParam = url.searchParams.get("status") || undefined;
@@ -273,7 +286,33 @@ async function handleSignalsRoute(req, res, url) {
       sendJson(res, 409, errorEnvelope(result.message));
       return true;
     }
+    if (result?.proposal?.ruleId === "ai-concierge-strategy" && result?.proposal?.status === "approved") {
+      try {
+        await maybeOpenAiConciergeDraftPullRequestForProposal({
+          proposalId: result.proposal.id,
+          actor: actorFromReq(req),
+        });
+      } catch {
+        // non-blocking
+      }
+    }
     sendJson(res, 200, okEnvelope({ proposal: result.proposal }));
+    return true;
+  }
+
+  // POST /recommendations/incidents/sync
+  // 用于把高优先级的 publish verification follow-up recommendation 自动推进成 incident follow-up proposal（幂等）。
+  if (url.pathname === "/recommendations/incidents/sync" && req.method === "POST") {
+    const auth = requireOpsAdmin(req);
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message));
+      return true;
+    }
+    const body = (await readJsonBody(req)) ?? {};
+    const limit = body.limit ?? 10;
+    const dryRun = Boolean(body.dryRun);
+    const result = syncIncidentFollowupProposalsForRecommendations({ actor: actorFromReq(req), limit, dryRun });
+    sendJson(res, 200, okEnvelope(result));
     return true;
   }
 

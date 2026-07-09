@@ -1,28 +1,24 @@
 import Link from "next/link";
+import { listProducts } from "@/lib/commerce/products";
+import { AiQuiz } from "./quiz-ui";
 
-export default function QuizPage() {
+type Props = {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+};
+
+export default async function QuizPage({ searchParams }: Props) {
+  const sp = (await searchParams) ?? {};
+  const src = typeof sp.src === "string" ? sp.src : "direct";
+  const product = typeof sp.product === "string" ? sp.product : null;
+  const products = await listProducts();
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-14">
-      <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
-        Find Your Match
-      </h1>
-      <p className="mt-4 text-zinc-600">
-        选购问答骨架：首期可先前端实现，后续可迁移到 Sanity 配置问题与推荐规则。
-      </p>
+      <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Find Your Match</h1>
+      <p className="mt-4 text-zinc-600">选购问答 v1：前端规则推荐 + 埋点 + A/B 分桶（后续可迁移到 Sanity 配置）。</p>
 
-      <div className="mt-8 rounded-2xl border border-zinc-200 bg-white p-6">
-        <p className="text-sm font-medium text-zinc-900">Q1. Is this your first toy?</p>
-        <div className="mt-4 flex flex-col gap-3">
-          <button className="h-11 rounded-md border border-zinc-300 bg-white text-left px-4 text-sm hover:bg-zinc-50">
-            Yes
-          </button>
-          <button className="h-11 rounded-md border border-zinc-300 bg-white text-left px-4 text-sm hover:bg-zinc-50">
-            No
-          </button>
-        </div>
-      </div>
+      <AiQuiz source={src} sourceProductSlug={product} products={products} />
 
-      <div className="mt-8 flex gap-4 text-sm">
+      <div className="mt-10 flex flex-wrap gap-4 text-sm">
         <Link className="underline underline-offset-4" href="/collection/first-time">
           Browse first-time picks
         </Link>
@@ -33,4 +29,3 @@ export default function QuizPage() {
     </div>
   );
 }
-
