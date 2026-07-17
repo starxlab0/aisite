@@ -18,6 +18,7 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
 
   const { items } = await listOpsTargets({ type, q });
   const authStatus = await getOpsAuthStatus();
+  const canPublish = Array.isArray(authStatus.capabilities) && authStatus.capabilities.includes("publish_content");
   const recommendations = await getRecommendations({
     status: status ?? "open,in_progress",
     targetType: type === "faq" ? undefined : type,
@@ -601,6 +602,15 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
           <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/monitoring">
             Monitoring
           </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/runbook">
+            Runbook
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/checklist">
+            Checklist
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/feedback">
+            Feedback
+          </Link>
           <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/customer-notifications">
             Notifications
           </Link>
@@ -634,6 +644,14 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
           <p className="mt-1 text-sm text-emerald-800">{msg}</p>
         </div>
       ) : null}
+      <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-4 text-sm text-zinc-700">
+        role {authStatus.role} · capabilities {authStatus.capabilities.join(", ") || "none"}
+        {!canPublish ? (
+          <p className="mt-1 text-xs text-amber-700">
+            Read-only mode: proposal transitions, repo publish actions, and policy updates require the `publish_content` capability.
+          </p>
+        ) : null}
+      </div>
 
       {signalsStatus.health !== "healthy" ? (
         <div
@@ -1076,7 +1094,13 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
             </label>
           </div>
           <div className="lg:col-span-2 flex justify-end">
-            <button className="rounded border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700">Save policy</button>
+            <button
+              disabled={!canPublish}
+              title={!canPublish ? "Requires publish_content capability" : undefined}
+              className="rounded border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Save policy
+            </button>
           </div>
         </form>
       </div>
@@ -1088,7 +1112,13 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
             <p className="mt-1 text-xs text-zinc-500">从 incident proposal 升级出来的代码变更候选。</p>
           </div>
           <form action={onSyncActiveRepoChanges}>
-            <button className="rounded border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700">Sync active</button>
+            <button
+              disabled={!canPublish}
+              title={!canPublish ? "Requires publish_content capability" : undefined}
+              className="rounded border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Sync active
+            </button>
           </form>
         </div>
         <div className="grid gap-4 border-b border-zinc-200 px-4 py-4 sm:grid-cols-6">
@@ -1145,6 +1175,7 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                     onSyncRepoChange={onSyncRepoChange}
                     onOpenRepoChangePullRequest={onOpenRepoChangePullRequest}
                     onOpenRepoChangeRevertPullRequest={onOpenRepoChangeRevertPullRequest}
+                    canPublish={canPublish}
                   />
                 </div>
               </div>
@@ -1179,6 +1210,7 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                     onSyncRepoChange={onSyncRepoChange}
                     onOpenRepoChangePullRequest={onOpenRepoChangePullRequest}
                     onOpenRepoChangeRevertPullRequest={onOpenRepoChangeRevertPullRequest}
+                    canPublish={canPublish}
                   />
                 </div>
               </div>
@@ -1213,6 +1245,7 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                     onSyncRepoChange={onSyncRepoChange}
                     onOpenRepoChangePullRequest={onOpenRepoChangePullRequest}
                     onOpenRepoChangeRevertPullRequest={onOpenRepoChangeRevertPullRequest}
+                    canPublish={canPublish}
                   />
                 </div>
               </div>
@@ -1247,6 +1280,7 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                     onSyncRepoChange={onSyncRepoChange}
                     onOpenRepoChangePullRequest={onOpenRepoChangePullRequest}
                     onOpenRepoChangeRevertPullRequest={onOpenRepoChangeRevertPullRequest}
+                    canPublish={canPublish}
                   />
                 </div>
               </div>
@@ -1307,6 +1341,7 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                             onSyncRepoChange={onSyncRepoChange}
                             onOpenRepoChangePullRequest={onOpenRepoChangePullRequest}
                             onOpenRepoChangeRevertPullRequest={onOpenRepoChangeRevertPullRequest}
+                            canPublish={canPublish}
                           />
                         </div>
                         <p className="mt-2 text-[11px] text-zinc-500">{priorityReason(change)}</p>
@@ -1444,7 +1479,11 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                     {!change.prUrl ? (
                       <form action={onOpenRepoChangePullRequest}>
                         <input type="hidden" name="id" value={change.id} />
-                        <button className="rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-700">
+                        <button
+                          disabled={!canPublish}
+                          title={!canPublish ? "Requires publish_content capability" : undefined}
+                          className="rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
                           Create PR
                         </button>
                       </form>
@@ -1452,7 +1491,11 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                     {["merged", "revert_candidate"].includes(change.status) && !change.revertPrUrl ? (
                       <form action={onOpenRepoChangeRevertPullRequest}>
                         <input type="hidden" name="id" value={change.id} />
-                        <button className="rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-700">
+                        <button
+                          disabled={!canPublish}
+                          title={!canPublish ? "Requires publish_content capability" : undefined}
+                          className="rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
                           Create revert PR
                         </button>
                       </form>
@@ -1469,7 +1512,11 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                     ) : null}
                     <form action={onSyncRepoChange}>
                       <input type="hidden" name="id" value={change.id} />
-                      <button className="rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-700">
+                      <button
+                        disabled={!canPublish}
+                        title={!canPublish ? "Requires publish_content capability" : undefined}
+                        className="rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
                         Sync GitHub
                       </button>
                     </form>
@@ -2096,7 +2143,11 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                         placeholder="提案备注（可选）"
                         className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs"
                       />
-                      <button className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs">
+                      <button
+                        disabled={!canPublish}
+                        title={!canPublish ? "Requires publish_content capability" : undefined}
+                        className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                      >
                         Create proposal
                       </button>
                     </form>
@@ -2231,11 +2282,23 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                             className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs"
                           />
                           {p.status === "draft" ? (
-                            <button className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs" name="status" value="approved">
+                            <button
+                              disabled={!canPublish}
+                              title={!canPublish ? "Requires publish_content capability" : undefined}
+                              className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                              name="status"
+                              value="approved"
+                            >
                               Approve
                             </button>
                           ) : null}
-                          <button className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs" name="status" value="rejected">
+                          <button
+                            disabled={!canPublish}
+                            title={!canPublish ? "Requires publish_content capability" : undefined}
+                            className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                            name="status"
+                            value="rejected"
+                          >
                             Reject
                           </button>
                         </form>
@@ -2257,17 +2320,35 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                           />
                         ) : null}
                         {p.status === "draft" ? (
-                          <button className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs" name="status" value="approved">
+                          <button
+                            disabled={!canPublish}
+                            title={!canPublish ? "Requires publish_content capability" : undefined}
+                            className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                            name="status"
+                            value="approved"
+                          >
                             Approve
                           </button>
                         ) : null}
                         {p.status !== "rejected" ? (
-                          <button className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs" name="status" value="rejected">
+                          <button
+                            disabled={!canPublish}
+                            title={!canPublish ? "Requires publish_content capability" : undefined}
+                            className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                            name="status"
+                            value="rejected"
+                          >
                             Reject
                           </button>
                         ) : null}
                         {p.status === "approved" ? (
-                          <button className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs" name="status" value="applied">
+                          <button
+                            disabled={!canPublish}
+                            title={!canPublish ? "Requires publish_content capability" : undefined}
+                            className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                            name="status"
+                            value="applied"
+                          >
                             Mark applied
                           </button>
                         ) : null}
@@ -2442,20 +2523,24 @@ function NextStepActions({
   onSyncRepoChange,
   onOpenRepoChangePullRequest,
   onOpenRepoChangeRevertPullRequest,
+  canPublish,
 }: {
   change: any;
   onSyncRepoChange: (formData: FormData) => Promise<void>;
   onOpenRepoChangePullRequest: (formData: FormData) => Promise<void>;
   onOpenRepoChangeRevertPullRequest: (formData: FormData) => Promise<void>;
+  canPublish: boolean;
 }) {
   const code = String(change?.recommendedNextStep?.code || "");
-  const actionClass = "rounded border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700";
+  const actionClass = "rounded border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50";
 
   if (code === "open_pr" && !change?.prUrl) {
     return (
       <form action={onOpenRepoChangePullRequest} className="mt-2 inline-flex">
         <input type="hidden" name="id" value={change.id} />
-        <button className={actionClass}>Create draft PR</button>
+        <button disabled={!canPublish} title={!canPublish ? "Requires publish_content capability" : undefined} className={actionClass}>
+          Create draft PR
+        </button>
       </form>
     );
   }
@@ -2463,7 +2548,9 @@ function NextStepActions({
     return (
       <form action={onSyncRepoChange} className="mt-2 inline-flex">
         <input type="hidden" name="id" value={change.id} />
-        <button className={actionClass}>Sync to advance</button>
+        <button disabled={!canPublish} title={!canPublish ? "Requires publish_content capability" : undefined} className={actionClass}>
+          Sync to advance
+        </button>
       </form>
     );
   }
@@ -2480,7 +2567,9 @@ function NextStepActions({
     return (
       <form action={onOpenRepoChangeRevertPullRequest} className="mt-2 inline-flex">
         <input type="hidden" name="id" value={change.id} />
-        <button className={actionClass}>Create revert PR</button>
+        <button disabled={!canPublish} title={!canPublish ? "Requires publish_content capability" : undefined} className={actionClass}>
+          Create revert PR
+        </button>
       </form>
     );
   }

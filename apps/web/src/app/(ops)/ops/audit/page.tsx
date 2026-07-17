@@ -123,6 +123,15 @@ export default async function OpsAuditPage({ searchParams }: Props) {
           <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops">
             Back to ops
           </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/audit/commerce">
+            Commerce audit
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/audit/seo-sync">
+            SEO sync audit
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/audit/result-governance">
+            Result governance audit
+          </Link>
         </div>
       </div>
 
@@ -216,6 +225,15 @@ export default async function OpsAuditPage({ searchParams }: Props) {
           </Link>
           <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/audit?action=auto_action_policy_update">
             Policy updates
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/audit/commerce">
+            Commerce audit
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/audit/seo-sync">
+            SEO sync audit
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/audit/result-governance">
+            Result governance audit
           </Link>
         </div>
       </form>

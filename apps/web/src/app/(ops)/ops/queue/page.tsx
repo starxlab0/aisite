@@ -29,6 +29,13 @@ function toneForProposal(item: { status?: string; reviewSummary?: { state?: stri
   return "neutral";
 }
 
+function seoFreshnessTone(status: string) {
+  if (status === "healthy") return "text-emerald-700";
+  if (status === "critical") return "text-rose-700";
+  if (status === "warning") return "text-amber-700";
+  return "text-zinc-500";
+}
+
 export default async function OpsQueuePage() {
   const auth = await getOpsAuthStatus();
   const monitoring = await getMonitoringSummary({});
@@ -50,6 +57,7 @@ export default async function OpsQueuePage() {
   const unassignedSupport = support.summary?.unassigned ?? support.items.filter((c) => !c.owner).length;
   const criticalNotifications = notifications.items.filter((n) => n.notify?.status === "failed").length;
   const seoTargets = monitoring.seoPerformance?.targets ?? [];
+  const seoFreshness = monitoring.seoFreshness ?? null;
   const seoLowCtr = seoTargets.filter((t) => t.summary.current.impressions >= 80 && t.summary.current.ctr < 0.02).length;
   const seoPositionDrop = seoTargets.filter((t) => (t.summary.delta.position ?? 0) > 3 && t.summary.current.impressions >= 50).length;
 
@@ -109,6 +117,15 @@ export default async function OpsQueuePage() {
             <Link className="underline underline-offset-4" href="/ops/monitoring">
               Open monitoring
             </Link>
+          </p>
+        </div>
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+          <p className="text-xs text-zinc-500">SEO metrics freshness</p>
+          <p className={`mt-2 text-2xl font-semibold ${seoFreshnessTone(seoFreshness?.status ?? "not_configured")}`}>
+            {seoFreshness?.status ?? "not_configured"}
+          </p>
+          <p className="mt-1 text-xs text-zinc-500">
+            latest {seoFreshness?.latestDate ?? "n/a"} · {seoFreshness?.daysSinceLatest == null ? "n/a" : `${seoFreshness.daysSinceLatest}d old`}
           </p>
         </div>
       </div>

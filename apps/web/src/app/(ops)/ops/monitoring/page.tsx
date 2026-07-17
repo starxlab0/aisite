@@ -1,5 +1,18 @@
 import Link from "next/link";
-import { generateOpsDraft, getMonitoringSummary, getOpsEvents, getRecommendations } from "@/lib/control-plane/ops";
+import {
+  applyOpsPlaybook,
+  controlSeoSearchConsoleSync,
+  generateOpsDraft,
+  getMonitoringSummary,
+  getOpsAuthStatus,
+  getOpsEvents,
+  getRecommendations,
+  importSeoMetricsFromSearchConsole,
+  replayLatestSeoImport,
+  registerSeoTarget,
+  transitionRepoChange,
+  transitionRuleTuningProposal,
+} from "@/lib/control-plane/ops";
 import { redirect } from "next/navigation";
 import { DependencyStatusBadge, GovernanceBadge, RollbackTriggerBadge, VerificationBadge, governanceToneClass } from "../components/governance-ui";
 
@@ -21,6 +34,60 @@ function dependencyTone(status: string) {
   if (status === "healthy") return "border-emerald-200 bg-emerald-50 text-emerald-800";
   if (status === "degraded") return "border-rose-200 bg-rose-50 text-rose-800";
   return "border-amber-200 bg-amber-50 text-amber-800";
+}
+
+function freshnessTone(status: string) {
+  if (status === "healthy") return "text-emerald-700";
+  if (status === "critical") return "text-rose-700";
+  if (status === "warning") return "text-amber-700";
+  return "text-zinc-500";
+}
+
+function importGapTone(status: string) {
+  if (status === "healthy") return "text-emerald-700";
+  if (status === "warning") return "text-amber-700";
+  return "text-zinc-600";
+}
+
+function seoSyncTone(health: string | null | undefined) {
+  if (health === "healthy") return "text-emerald-700";
+  if (health === "degraded") return "text-rose-700";
+  if (health === "warning" || health === "paused" || health === "not_configured") return "text-amber-700";
+  return "text-zinc-500";
+}
+
+function seoSyncLabel(healthLabel: string | null | undefined) {
+  return healthLabel || "unknown";
+}
+
+function seoRuntimeJudgmentTone(health: string | null | undefined) {
+  if (health === "healthy") return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  if (health === "degraded") return "border-rose-200 bg-rose-50 text-rose-800";
+  return "border-amber-200 bg-amber-50 text-amber-800";
+}
+
+function resultGovernanceJudgmentTone(health: string | null | undefined) {
+  if (health === "healthy") return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  if (health === "degraded") return "border-rose-200 bg-rose-50 text-rose-800";
+  return "border-amber-200 bg-amber-50 text-amber-800";
+}
+
+function commerceJudgmentTone(health: string | null | undefined) {
+  if (health === "healthy") return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  if (health === "degraded") return "border-rose-200 bg-rose-50 text-rose-800";
+  return "border-amber-200 bg-amber-50 text-amber-800";
+}
+
+function repoChangeStatusLabel(status: string) {
+  if (status === "merged") return "merged";
+  if (status === "pr_opened") return "draft pr";
+  if (status === "ci_running") return "ci running";
+  if (status === "ci_passed") return "ci passed";
+  if (status === "ci_failed") return "ci failed";
+  if (status === "merge_candidate") return "ready";
+  if (status === "auto_merge_candidate") return "auto-merge";
+  if (status === "draft") return "repo change";
+  return status || "n/a";
 }
 
 function governanceTone(status: string) {
@@ -72,9 +139,115 @@ function draftHrefForTarget(target?: { type?: string; id?: string } | null, draf
   return null;
 }
 
+function weeklyBetFeedbackKey(bet: {
+  priority: string;
+  targetType: string;
+  targetId: string | null;
+  title: string;
+}) {
+  return `weekly:${bet.priority}:${bet.targetType}:${bet.targetId ?? "none"}:${bet.title}`;
+}
+
+function feedbackTone(status: string | undefined) {
+  if (status === "success") return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  if (status === "error") return "border-rose-200 bg-rose-50 text-rose-800";
+  return "border-zinc-200 bg-zinc-50 text-zinc-700";
+}
+
+function executionStateTone(state: string | undefined) {
+  if (state === "succeeded") return "text-emerald-700";
+  if (state === "observing" || state === "executed") return "text-sky-700";
+  if (state === "returned_to_risk") return "text-rose-700";
+  return "text-zinc-600";
+}
+
+function observationTone(status: string | undefined) {
+  if (status === "complete") return "text-emerald-700";
+  if (status === "observing" || status === "handoff_ready") return "text-sky-700";
+  if (status === "regressed") return "text-rose-700";
+  return "text-zinc-600";
+}
+
+function playbookStatusMeta(status: string | undefined) {
+  const key = String(status || "no_application");
+  const map: Record<
+    string,
+    {
+      priority: string;
+      label: string;
+      badgeClassName: string;
+      cardBorderClassName: string;
+    }
+  > = {
+    observing: {
+      priority: "P0",
+      label: "Observing",
+      badgeClassName: "border-rose-200 bg-rose-50 text-rose-700",
+      cardBorderClassName: "border-rose-200",
+    },
+    executed: {
+      priority: "P1",
+      label: "Executed",
+      badgeClassName: "border-orange-200 bg-orange-50 text-orange-800",
+      cardBorderClassName: "border-orange-200",
+    },
+    in_review: {
+      priority: "P2",
+      label: "In review",
+      badgeClassName: "border-amber-200 bg-amber-50 text-amber-800",
+      cardBorderClassName: "border-amber-200",
+    },
+    draft: {
+      priority: "P3",
+      label: "Draft",
+      badgeClassName: "border-zinc-200 bg-zinc-50 text-zinc-700",
+      cardBorderClassName: "border-zinc-200",
+    },
+    regressed: {
+      priority: "P1",
+      label: "Regressed",
+      badgeClassName: "border-rose-200 bg-rose-50 text-rose-700",
+      cardBorderClassName: "border-rose-200",
+    },
+    succeeded: {
+      priority: "P4",
+      label: "Succeeded",
+      badgeClassName: "border-emerald-200 bg-emerald-50 text-emerald-800",
+      cardBorderClassName: "border-emerald-200",
+    },
+    cancelled: {
+      priority: "P5",
+      label: "Cancelled",
+      badgeClassName: "border-zinc-200 bg-zinc-50 text-zinc-500",
+      cardBorderClassName: "border-zinc-200",
+    },
+    no_application: {
+      priority: "P3",
+      label: "No application",
+      badgeClassName: "border-sky-200 bg-sky-50 text-sky-800",
+      cardBorderClassName: "border-sky-200",
+    },
+  };
+  return (
+    map[key] ?? {
+      priority: "P3",
+      label: key,
+      badgeClassName: "border-zinc-200 bg-zinc-50 text-zinc-700",
+      cardBorderClassName: "border-zinc-200",
+    }
+  );
+}
+
 export default async function OpsMonitoringPage({ searchParams }: Props) {
   const sp = (await searchParams) ?? {};
+  const auth = await getOpsAuthStatus();
+  const canPublish = Array.isArray(auth.capabilities) && auth.capabilities.includes("publish_content");
   const targetType = getString(sp, "type");
+  const msg = getString(sp, "msg");
+  const err = getString(sp, "err");
+  const feedbackKey = getString(sp, "feedbackKey");
+  const feedbackStatus = getString(sp, "feedbackStatus");
+  const feedbackNote = getString(sp, "feedbackNote");
 
   const monitoring = await getMonitoringSummary({ targetType: targetType === "faq" ? undefined : targetType });
   const publishEvents = await getOpsEvents({ action: "publish", limit: 12, targetType: targetType === "faq" ? undefined : targetType });
@@ -89,6 +262,53 @@ export default async function OpsMonitoringPage({ searchParams }: Props) {
   const commerceGovernanceGroup = monitoring.commerceCheckout.governance;
   const paymentGovernanceGroup = monitoring.paymentResults24h.governance;
   const seoTargets = monitoring.seoPerformance?.targets ?? [];
+  const seoFreshness = monitoring.seoFreshness ?? null;
+  const seoImportDiagnostics = monitoring.seoImportDiagnostics ?? null;
+  const seoSync = monitoring.runtime.seoSync;
+  const seoRuntimeJudgment = monitoring.seoRuntimeJudgment ?? null;
+  const seoSyncHistory = monitoring.seoSyncHistory ?? null;
+  const seoSyncControlAudit = monitoring.seoSyncControlAudit ?? null;
+  const seoSyncRecoveryReview = monitoring.seoSyncRecoveryReview ?? null;
+  const todaysBestBet = monitoring.todaysBestBet ?? null;
+  const decisionTimeline = monitoring.decisionTimeline ?? null;
+  const dailySnapshotHistory = monitoring.dailySnapshotHistory ?? null;
+  const weeklyOperatingReview = monitoring.weeklyOperatingReview ?? null;
+  const governanceOverview = monitoring.governanceOverview ?? null;
+  const growthLoopOverview = monitoring.growthLoopOverview ?? null;
+  const geoOverview = monitoring.geoOverview ?? null;
+  const growthExperimentOverview = monitoring.growthExperimentOverview ?? null;
+  const resultGovernanceRuntimeJudgment = monitoring.resultGovernanceRuntimeJudgment ?? null;
+  const resultGovernanceLaneSummary = monitoring.resultGovernanceLaneSummary ?? null;
+  const commerceHealthSummary = monitoring.commerceHealthSummary ?? null;
+  const commerceRuntimeJudgment = monitoring.commerceRuntimeJudgment ?? null;
+  const commerceSourceSummary = monitoring.commerceSourceSummary ?? null;
+  const todaysBestBetExecutionState =
+    todaysBestBet && feedbackKey === "today-best-bet" && feedbackStatus === "success" ? "executed" : todaysBestBet?.executionState ?? null;
+  const todaysBestBetExecutionReason =
+    todaysBestBet && feedbackKey === "today-best-bet" && feedbackStatus === "success"
+      ? feedbackNote || "This bet was executed from monitoring."
+      : todaysBestBet?.executionReason ?? null;
+  const todaysBestBetObservationStatus =
+    todaysBestBet && feedbackKey === "today-best-bet" && feedbackStatus === "success"
+      ? "handoff_ready"
+      : todaysBestBet?.observationStatus ?? null;
+  const todaysBestBetObservationWindow =
+    todaysBestBet && feedbackKey === "today-best-bet" && feedbackStatus === "success"
+      ? "next 24-72h"
+      : todaysBestBet?.observationWindow ?? null;
+  const todaysBestBetObservationNextStep =
+    todaysBestBet && feedbackKey === "today-best-bet" && feedbackStatus === "success"
+      ? `Start the observation window for ${todaysBestBet.targetLabel} and watch the first metrics now.`
+      : todaysBestBet?.observationNextStep ?? null;
+  const seoSuggestedTargets =
+    seoImportDiagnostics?.recentUnmappedPages
+      ?.filter((item) => item.suggestion?.targetType && item.suggestion?.targetId && item.suggestion.confidence === "high")
+      .slice(0, 5)
+      .map((item) => ({
+        targetType: item.suggestion!.targetType,
+        targetId: item.suggestion!.targetId,
+        targetPath: item.pagePath,
+      })) ?? [];
   const seoLowCtr = seoTargets.filter((t) => t.summary.current.impressions >= 80 && t.summary.current.ctr < 0.02).length;
   const seoPositionDrop = seoTargets.filter((t) => (t.summary.delta.position ?? 0) > 3 && t.summary.current.impressions >= 50).length;
   const seoRecommendationByTarget = new Map(
@@ -129,6 +349,219 @@ export default async function OpsMonitoringPage({ searchParams }: Props) {
     }
   }
 
+  async function onImportSeoCsv(formData: FormData) {
+    "use server";
+    const csvText = String(formData.get("csvText") ?? "").trim();
+    const importDate = String(formData.get("importDate") ?? "").trim();
+    if (!csvText) {
+      redirect("/ops/monitoring?err=CSV%20text%20is%20required");
+    }
+    try {
+      const result = await importSeoMetricsFromSearchConsole({
+        csvText,
+        importDate: importDate || undefined,
+        source: "search_console",
+      });
+      const params = new URLSearchParams();
+      params.set(
+        "msg",
+        `Imported ${result.ingested}/${result.parsedRows} rows, skipped ${result.skippedRows}${result.unmappedPages.length ? `, unmapped ${result.unmappedPages.length}` : ""}`,
+      );
+      redirect(`/ops/monitoring?${params.toString()}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "SEO import failed";
+      redirect(`/ops/monitoring?err=${encodeURIComponent(message)}`);
+    }
+  }
+
+  async function onRegisterSeoTarget(formData: FormData) {
+    "use server";
+    const targetType = String(formData.get("targetType") ?? "");
+    const targetId = String(formData.get("targetId") ?? "");
+    const targetPath = String(formData.get("targetPath") ?? "");
+    if (!targetType || !targetId || !targetPath) return;
+    try {
+      const result = await registerSeoTarget({
+        targetType: targetType as any,
+        targetId,
+        targetPath,
+        title: targetId,
+      });
+      const prUrl = result.repoChange?.prUrl;
+      if (prUrl) redirect(prUrl);
+      redirect(`/ops/monitoring?msg=${encodeURIComponent("Repo change created; open PR from ops queue.")}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Register target failed";
+      redirect(`/ops/monitoring?err=${encodeURIComponent(message)}`);
+    }
+  }
+
+  async function onRegisterSeoTargetsBulk(formData: FormData) {
+    "use server";
+    const raw = String(formData.get("items") ?? "[]");
+    let items: Array<{ targetType: "product" | "collection" | "guide"; targetId: string; targetPath: string }> = [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) items = parsed;
+    } catch {
+      items = [];
+    }
+    if (!items.length) redirect("/ops/monitoring?err=No%20suggested%20targets%20to%20register");
+
+    const opened: string[] = [];
+    let reused = 0;
+    let merged = 0;
+    for (const item of items.slice(0, 5)) {
+      try {
+        const result = await registerSeoTarget(item);
+        const status = result.result?.status;
+        const prUrl = result.repoChange?.prUrl;
+        if (status === "exists" && result.repoChange?.status === "merged") {
+          merged += 1;
+          continue;
+        }
+        if (status === "exists" || status === "exists" || status === "created") {
+          if (status === "exists") reused += 1;
+        }
+        if (prUrl) opened.push(prUrl);
+      } catch {
+        // ignore per-item failure; we still want partial progress
+      }
+    }
+
+    const msg =
+      opened.length > 0
+        ? `Opened ${opened.length} PR(s)${reused ? `, reused ${reused}` : ""}${merged ? `, already merged ${merged}` : ""}. First: ${opened[0]}`
+        : merged > 0 || reused > 0
+          ? `No new PRs needed${reused ? `, reused ${reused}` : ""}${merged ? `, already merged ${merged}` : ""}.`
+          : "Repo changes created. Open PRs from ops queue.";
+    redirect(`/ops/monitoring?msg=${encodeURIComponent(msg)}`);
+  }
+
+  async function onPromotionMutation(formData: FormData) {
+    "use server";
+    const mutationKind = String(formData.get("mutationKind") ?? "");
+    const targetId = String(formData.get("targetId") ?? "");
+    const nextStatus = String(formData.get("nextStatus") ?? "");
+    const returnTargetType = String(formData.get("returnTargetType") ?? "").trim();
+    const feedbackKey = String(formData.get("feedbackKey") ?? "").trim();
+    if (!["proposal_transition", "repo_change_transition"].includes(mutationKind) || !targetId || !nextStatus) {
+      redirect("/ops/monitoring?err=Invalid%20promotion%20mutation");
+    }
+    try {
+      if (mutationKind === "repo_change_transition") {
+        const repoChange = await transitionRepoChange(targetId, {
+          status: nextStatus as "merge_candidate" | "auto_merge_candidate",
+          note: "promoted from monitoring candidate action",
+        });
+        const params = new URLSearchParams();
+        if (returnTargetType) params.set("type", returnTargetType);
+        params.set("msg", `repo change ${repoChange.id} -> ${repoChange.status}`);
+        if (feedbackKey) params.set("feedbackKey", feedbackKey);
+        params.set("feedbackStatus", "success");
+        params.set("feedbackNote", `repo change promoted to ${repoChange.status}`);
+        redirect(`/ops/monitoring?${params.toString()}`);
+      }
+      const proposal = await transitionRuleTuningProposal(targetId, {
+        status: nextStatus as "approved",
+        note: "promoted from monitoring candidate action",
+      });
+      const params = new URLSearchParams();
+      if (returnTargetType) params.set("type", returnTargetType);
+      params.set("msg", `proposal ${proposal.id} -> ${proposal.status}`);
+      if (feedbackKey) params.set("feedbackKey", feedbackKey);
+      params.set("feedbackStatus", "success");
+      params.set("feedbackNote", `proposal promoted to ${proposal.status}`);
+      redirect(`/ops/monitoring?${params.toString()}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Promotion failed";
+      const params = new URLSearchParams();
+      if (returnTargetType) params.set("type", returnTargetType);
+      params.set("err", message);
+      if (feedbackKey) params.set("feedbackKey", feedbackKey);
+      params.set("feedbackStatus", "error");
+      params.set("feedbackNote", message);
+      redirect(`/ops/monitoring?${params.toString()}`);
+    }
+  }
+
+  async function onApplyPlaybook(formData: FormData) {
+    "use server";
+    const playbookId = String(formData.get("playbookId") ?? "");
+    const source = String(formData.get("source") ?? "");
+    const applyTargetType = String(formData.get("applyTargetType") ?? "");
+    const applyTargetId = String(formData.get("applyTargetId") ?? "");
+    const applyTargetLabel = String(formData.get("applyTargetLabel") ?? "");
+    const returnTargetType = String(formData.get("returnTargetType") ?? "").trim();
+    const feedbackKey = String(formData.get("feedbackKey") ?? "").trim();
+    if (!playbookId) {
+      redirect("/ops/monitoring?err=Invalid%20playbook%20apply");
+    }
+    try {
+      const result = await applyOpsPlaybook(playbookId, {
+        source: source || undefined,
+        targetType: applyTargetType || undefined,
+        targetId: applyTargetId || undefined,
+        targetLabel: applyTargetLabel || undefined,
+        note: "applied from monitoring",
+      });
+      const params = new URLSearchParams();
+      if (returnTargetType) params.set("type", returnTargetType);
+      params.set("msg", `playbook application ${result.application.id} created`);
+      if (feedbackKey) params.set("feedbackKey", feedbackKey);
+      params.set("feedbackStatus", "info");
+      params.set("feedbackNote", `playbook draft ${result.application.id} prepared`);
+      redirect(`/ops/monitoring?${params.toString()}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Playbook apply failed";
+      const params = new URLSearchParams();
+      if (returnTargetType) params.set("type", returnTargetType);
+      params.set("err", message);
+      if (feedbackKey) params.set("feedbackKey", feedbackKey);
+      params.set("feedbackStatus", "error");
+      params.set("feedbackNote", message);
+      redirect(`/ops/monitoring?${params.toString()}`);
+    }
+  }
+
+  async function onReplayLatestSeoImport() {
+    "use server";
+    try {
+      const result = await replayLatestSeoImport();
+      if (result.status === "missing_replay") {
+        redirect(`/ops/monitoring?err=${encodeURIComponent(result.message || "No replayable import available")}`);
+      }
+      const msg = `Replayed latest import: ${result.ingested ?? 0}/${result.parsedRows ?? 0} rows, skipped ${result.skippedRows ?? 0}`;
+      redirect(`/ops/monitoring?msg=${encodeURIComponent(msg)}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Replay latest import failed";
+      redirect(`/ops/monitoring?err=${encodeURIComponent(message)}`);
+    }
+  }
+
+  async function onControlSeoSync(formData: FormData) {
+    "use server";
+    const action = String(formData.get("action") ?? "").trim() as "retry_now" | "clear_backoff" | "pause" | "resume";
+    if (!action) {
+      redirect("/ops/monitoring?err=SEO%20sync%20action%20is%20required");
+    }
+    try {
+      await controlSeoSearchConsoleSync(action);
+      const msg =
+        action === "retry_now"
+          ? "Search Console sync triggered."
+          : action === "clear_backoff"
+            ? "Search Console sync backoff cleared."
+            : action === "pause"
+              ? "Search Console sync automation paused."
+              : "Search Console sync automation resumed.";
+      redirect(`/ops/monitoring?msg=${encodeURIComponent(msg)}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Search Console sync control failed";
+      redirect(`/ops/monitoring?err=${encodeURIComponent(message)}`);
+    }
+  }
+
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-14">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -140,14 +573,761 @@ export default async function OpsMonitoringPage({ searchParams }: Props) {
           <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops">
             Back to ops
           </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/runbook">
+            Runbook
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/checklist">
+            Checklist
+          </Link>
           <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/audit?action=publish">
             Publish audit
           </Link>
           <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/audit?action=rollback">
             Rollback audit
           </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/playbooks">
+            Playbooks
+          </Link>
         </div>
       </div>
+
+      {msg ? (
+        <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{msg}</div>
+      ) : null}
+      {err ? (
+        <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{err}</div>
+      ) : null}
+      <div className="mt-4 rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
+        role {auth.role} · capabilities {auth.capabilities.join(", ") || "none"}
+        {!canPublish ? (
+          <p className="mt-1 text-xs text-amber-700">
+            Read-only mode: playbook apply, lifecycle transition, and promotion actions require the `publish_content` capability.
+          </p>
+        ) : null}
+      </div>
+      {todaysBestBet ? (
+        <div className={`mt-4 rounded-2xl border px-4 py-4 ${commerceJudgmentTone(todaysBestBet.health)}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-wide opacity-80">Today's best bet</p>
+              <p className="mt-1 text-base font-medium">{todaysBestBet.headline}</p>
+              <p className="mt-1 text-sm opacity-90">{todaysBestBet.reason}</p>
+              <p className="mt-2 text-xs opacity-80">Target: {todaysBestBet.targetLabel}</p>
+              <p className="mt-2 text-xs opacity-80">Automation: {todaysBestBet.automationEligibility}</p>
+              <p className="mt-2 text-xs opacity-80">{todaysBestBet.automationReason}</p>
+              {todaysBestBet.automationArtifact ? (
+                <p className="mt-2 text-xs opacity-80">
+                  Auto draft ready: {todaysBestBet.automationArtifact.label} · {todaysBestBet.automationArtifact.status}
+                </p>
+              ) : null}
+              <p className={`mt-2 text-xs ${executionStateTone(todaysBestBetExecutionState ?? undefined)}`}>Execution: {todaysBestBetExecutionState}</p>
+              <p className="mt-2 text-xs opacity-80">{todaysBestBetExecutionReason}</p>
+              <p className={`mt-2 text-xs ${observationTone(todaysBestBetObservationStatus ?? undefined)}`}>Observation: {todaysBestBetObservationStatus}</p>
+              <p className="mt-2 text-xs opacity-80">Window: {todaysBestBetObservationWindow}</p>
+              <p className="mt-2 text-xs opacity-80">Watch: {todaysBestBet.observationMetrics.join(" · ")}</p>
+              <p className="mt-2 text-xs opacity-80">Next observation step: {todaysBestBetObservationNextStep}</p>
+              <p className="mt-2 text-xs opacity-80">Promotion: {todaysBestBet.promotionEligibility}</p>
+              <p className="mt-2 text-xs opacity-80">{todaysBestBet.promotionReason}</p>
+              <p className="mt-2 text-xs opacity-80">Promotion action: {todaysBestBet.promotionAction.actionLabel}</p>
+              <p className="mt-2 text-xs opacity-80">{todaysBestBet.promotionAction.description}</p>
+              {feedbackKey === "today-best-bet" && feedbackNote ? (
+                <div className={`mt-3 rounded-xl border px-3 py-2 text-xs ${feedbackTone(feedbackStatus)}`}>Execution feedback: {feedbackNote}</div>
+              ) : null}
+              {todaysBestBet.playbookRef ? (
+                <>
+                  <p className="mt-2 text-xs opacity-80">
+                    Playbook:{" "}
+                    <Link href={todaysBestBet.playbookRef.actionPath} className="underline underline-offset-2">
+                      {todaysBestBet.playbookRef.title}
+                    </Link>
+                  </p>
+                  {todaysBestBet.playbookRef.latestApplication ? (
+                    <>
+                      <p className="mt-2 text-xs opacity-80">
+                        Latest application: {todaysBestBet.playbookRef.latestApplication.id} · {todaysBestBet.playbookRef.latestApplication.status}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${
+                            playbookStatusMeta(todaysBestBet.playbookRef.latestApplication.status).badgeClassName
+                          }`}
+                        >
+                          {playbookStatusMeta(todaysBestBet.playbookRef.latestApplication.status).priority} ·{" "}
+                          {playbookStatusMeta(todaysBestBet.playbookRef.latestApplication.status).label}
+                        </span>
+                      </div>
+                      {todaysBestBet.playbookRef.latestApplication.nextAction ? (
+                        <p className="mt-2 text-xs opacity-80">
+                          Next playbook action: {todaysBestBet.playbookRef.latestApplication.nextAction.actionLabel}
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${
+                          playbookStatusMeta("no_application").badgeClassName
+                        }`}
+                      >
+                        {playbookStatusMeta("no_application").priority} · {playbookStatusMeta("no_application").label}
+                      </span>
+                    </div>
+                  )}
+                </>
+              ) : null}
+              <p className="mt-2 text-xs opacity-80">Why now: {todaysBestBet.expectedImpact}</p>
+              <p className="mt-2 text-xs opacity-80">Next step: {todaysBestBet.actionHint}</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{todaysBestBet.source}</div>
+              <Link href={todaysBestBet.actionPath} className="rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs">
+                {todaysBestBet.actionLabel}
+              </Link>
+              {todaysBestBet.promotionAction.mutation ? (
+                <form action={onPromotionMutation}>
+                  <input type="hidden" name="mutationKind" value={todaysBestBet.promotionAction.mutation.kind} />
+                  <input type="hidden" name="targetId" value={todaysBestBet.promotionAction.mutation.targetId} />
+                  <input type="hidden" name="nextStatus" value={todaysBestBet.promotionAction.mutation.nextStatus} />
+                  <input type="hidden" name="returnTargetType" value={targetType ?? ""} />
+                  <input type="hidden" name="feedbackKey" value="today-best-bet" />
+                  <button disabled={!canPublish} type="submit" className="rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50">
+                    {todaysBestBet.promotionAction.actionLabel}
+                  </button>
+                </form>
+              ) : (
+                <Link href={todaysBestBet.promotionAction.actionPath} className="rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs">
+                  {todaysBestBet.promotionAction.actionLabel}
+                </Link>
+              )}
+              {todaysBestBet.playbookRef ? (
+                <form action={onApplyPlaybook}>
+                  <input type="hidden" name="playbookId" value={todaysBestBet.playbookRef.id} />
+                  <input type="hidden" name="source" value={todaysBestBet.source} />
+                  <input type="hidden" name="applyTargetType" value={todaysBestBet.targetType} />
+                  <input type="hidden" name="applyTargetId" value={todaysBestBet.targetId ?? ""} />
+                  <input type="hidden" name="applyTargetLabel" value={todaysBestBet.targetLabel} />
+                  <input type="hidden" name="returnTargetType" value={targetType ?? ""} />
+                  <input type="hidden" name="feedbackKey" value="today-best-bet" />
+                  <button disabled={!canPublish} type="submit" className="rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50">
+                    Apply playbook
+                  </button>
+                </form>
+              ) : null}
+              {todaysBestBet.playbookRef?.latestApplication?.nextAction ? (
+                <Link
+                  href={todaysBestBet.playbookRef.latestApplication.nextAction.actionPath}
+                  className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs text-white"
+                >
+                  {todaysBestBet.playbookRef.latestApplication.nextAction.actionLabel}
+                </Link>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {decisionTimeline ? (
+        <div className={`mt-4 rounded-2xl border px-4 py-4 ${commerceJudgmentTone(decisionTimeline.trend === "risk_heavy" ? "degraded" : decisionTimeline.trend === "steady" ? "healthy" : "warning")}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-wide opacity-80">Decision timeline</p>
+              <p className="mt-1 text-base font-medium">{decisionTimeline.summary}</p>
+              <p className="mt-1 text-sm opacity-90">{decisionTimeline.currentStory}</p>
+              <p className="mt-2 text-xs opacity-80">
+                decisions {decisionTimeline.counts.decision} · execution {decisionTimeline.counts.execution} · risk {decisionTimeline.counts.risk} · signals {decisionTimeline.counts.signal}
+              </p>
+            </div>
+            <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{decisionTimeline.trend}</div>
+          </div>
+          {decisionTimeline.items.length ? (
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {decisionTimeline.items.map((item, index) => (
+                <div key={`${item.at}:${item.title}:${index}`} className="rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+                  <p className="text-xs opacity-80">{item.kind}</p>
+                  <p className="mt-1 text-sm font-medium">{item.title}</p>
+                  <p className="mt-1 text-xs opacity-80">{item.detail}</p>
+                  <p className="mt-2 text-xs opacity-70">{item.at}</p>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {dailySnapshotHistory?.items?.length ? (
+        <div className="mt-4 rounded-2xl border border-zinc-200 bg-white px-4 py-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">Daily snapshot history</p>
+              <p className="mt-1 text-base font-medium text-zinc-900">Recent daily operating snapshots</p>
+              <p className="mt-1 text-sm text-zinc-600">按天回看最近的 best bet 和几个 top-level health，帮助判断建议最近是怎么演化的。</p>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {dailySnapshotHistory.items.map((item) => (
+              <div key={item.date} className={`rounded-xl border p-4 ${commerceJudgmentTone(item.todaysBestBet?.health ?? item.governanceOverview?.health ?? "warning")}`}>
+                <p className="text-xs opacity-80">{item.date}</p>
+                <p className="mt-1 text-sm font-medium">{item.todaysBestBet?.headline ?? "No best bet recorded"}</p>
+                <p className="mt-1 text-xs opacity-80">{item.todaysBestBet?.source ?? "snapshot"} · recorded {item.recordedAt}</p>
+                <div className="mt-3 space-y-1 text-xs opacity-80">
+                  <p>governance {item.governanceOverview?.health ?? "n/a"}</p>
+                  <p>growth loop {item.growthLoopOverview?.health ?? "n/a"}</p>
+                  <p>GEO {item.geoOverview?.health ?? "n/a"}</p>
+                  <p>experiments {item.growthExperimentOverview?.health ?? "n/a"}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {weeklyOperatingReview ? (
+        <div className={`mt-4 rounded-2xl border px-4 py-4 ${commerceJudgmentTone(weeklyOperatingReview.health)}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-wide opacity-80">Weekly operating review</p>
+              <p className="mt-1 text-base font-medium">{weeklyOperatingReview.headline}</p>
+              <p className="mt-1 text-sm opacity-90">{weeklyOperatingReview.summary}</p>
+              <p className="mt-2 text-xs opacity-80">
+                range {weeklyOperatingReview.range.from ?? "n/a"} → {weeklyOperatingReview.range.to ?? "n/a"} · focus {weeklyOperatingReview.focus}
+              </p>
+            </div>
+            <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{weeklyOperatingReview.health}</div>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {(["governance", "growth_loop", "geo", "experiment"] as const).map((key) => (
+              <div key={key} className="rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+                <p className="text-xs uppercase tracking-wide opacity-80">{key}</p>
+                <p className="mt-1 text-xs opacity-80">
+                  healthy {weeklyOperatingReview.healthBuckets[key].healthy} · warning {weeklyOperatingReview.healthBuckets[key].warning} · degraded {weeklyOperatingReview.healthBuckets[key].degraded}
+                </p>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+            <p className="text-xs uppercase tracking-wide opacity-80">Executed bets</p>
+            <p className="mt-1 text-sm opacity-90">{weeklyOperatingReview.executionOutcomes.summary}</p>
+            <p className="mt-2 text-xs opacity-80">
+              executed {weeklyOperatingReview.executionOutcomes.counts.executed} · observing {weeklyOperatingReview.executionOutcomes.counts.observing} · succeeded {weeklyOperatingReview.executionOutcomes.counts.succeeded} · returned to risk {weeklyOperatingReview.executionOutcomes.counts.returned_to_risk}
+            </p>
+          </div>
+          {weeklyOperatingReview.executionOutcomes.items.length ? (
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {weeklyOperatingReview.executionOutcomes.items.map((item) => (
+                <div key={`${item.date}:${item.headline}:${item.targetLabel}`} className="rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+                  <p className="text-xs opacity-80">{item.date}</p>
+                  <p className="mt-1 text-sm font-medium">{item.headline}</p>
+                  <p className="mt-1 text-xs opacity-80">{item.source} · {item.targetLabel}</p>
+                  <p className={`mt-2 text-xs ${executionStateTone(item.executionState)}`}>Execution: {item.executionState}</p>
+                  <p className={`mt-2 text-xs ${observationTone(item.observationStatus)}`}>Observation: {item.observationStatus}</p>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <div className="mt-4 rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+            <p className="text-xs uppercase tracking-wide opacity-80">Outcome attribution</p>
+            <p className="mt-2 text-xs opacity-80">
+              governance {weeklyOperatingReview.outcomeAttribution.bySource.governance.succeeded}/{weeklyOperatingReview.outcomeAttribution.bySource.governance.total} wins · growth loop {weeklyOperatingReview.outcomeAttribution.bySource.growth_loop.succeeded}/{weeklyOperatingReview.outcomeAttribution.bySource.growth_loop.total} wins · geo {weeklyOperatingReview.outcomeAttribution.bySource.geo.succeeded}/{weeklyOperatingReview.outcomeAttribution.bySource.geo.total} wins · experiment {weeklyOperatingReview.outcomeAttribution.bySource.experiment.succeeded}/{weeklyOperatingReview.outcomeAttribution.bySource.experiment.total} wins
+            </p>
+            {weeklyOperatingReview.outcomeAttribution.hints.length ? (
+              <div className="mt-3 space-y-1 text-xs opacity-80">
+                {weeklyOperatingReview.outcomeAttribution.hints.map((hint) => (
+                  <p key={hint}>{hint}</p>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          {weeklyOperatingReview.playbookDrafts?.length ? (
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {weeklyOperatingReview.playbookDrafts.map((pb) => (
+                <div
+                  key={pb.id}
+                  className={`rounded-xl border bg-white/70 p-4 text-current ${
+                    playbookStatusMeta(pb.latestApplication?.status ?? "no_application").cardBorderClassName
+                  }`}
+                >
+                  <p className="text-xs opacity-80">Playbook draft</p>
+                  <p className="mt-1 text-sm font-medium">{pb.title}</p>
+                  <p className="mt-1 text-xs opacity-80">{pb.source} · {pb.targetType}</p>
+                  {pb.latestApplication ? (
+                    <>
+                      <p className="mt-2 text-xs opacity-80">
+                        Latest application: {pb.latestApplication.id} · {pb.latestApplication.status}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${
+                            playbookStatusMeta(pb.latestApplication.status).badgeClassName
+                          }`}
+                        >
+                          {playbookStatusMeta(pb.latestApplication.status).priority} · {playbookStatusMeta(pb.latestApplication.status).label}
+                        </span>
+                      </div>
+                      {pb.latestApplication.nextAction ? (
+                        <p className="mt-2 text-xs opacity-80">
+                          Next playbook action: {pb.latestApplication.nextAction.actionLabel}
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${
+                          playbookStatusMeta("no_application").badgeClassName
+                        }`}
+                      >
+                        {playbookStatusMeta("no_application").priority} · {playbookStatusMeta("no_application").label}
+                      </span>
+                    </div>
+                  )}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {pb.latestApplication?.nextAction ? (
+                      <Link href={pb.latestApplication.nextAction.actionPath} className="inline-flex rounded-lg bg-zinc-900 px-3 py-1.5 text-xs text-white">
+                        {pb.latestApplication.nextAction.actionLabel}
+                      </Link>
+                    ) : null}
+                    <form action={onApplyPlaybook}>
+                      <input type="hidden" name="playbookId" value={pb.id} />
+                      <input type="hidden" name="source" value={pb.source} />
+                      <input type="hidden" name="applyTargetType" value={pb.targetType} />
+                      <input type="hidden" name="applyTargetId" value="" />
+                      <input type="hidden" name="applyTargetLabel" value={pb.title} />
+                      <input type="hidden" name="returnTargetType" value={targetType ?? ""} />
+                      <button disabled={!canPublish} type="submit" className="inline-flex rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50">
+                        Apply playbook
+                      </button>
+                    </form>
+                    <Link href={pb.actionPath} className="inline-flex rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs">
+                      Open playbook
+                    </Link>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {weeklyOperatingReview.playbookApplicationOutcomes ? (
+            <div className="mt-4 rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+              <p className="text-xs uppercase tracking-wide opacity-80">Playbook applications</p>
+              <p className="mt-1 text-sm opacity-90">{weeklyOperatingReview.playbookApplicationOutcomes.summary}</p>
+              {weeklyOperatingReview.playbookApplicationOutcomes.items?.length ? (
+                <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {weeklyOperatingReview.playbookApplicationOutcomes.items.map((item) => (
+                    <div key={`${item.playbookId}:${item.applicationId}`} className="rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+                      <p className="text-xs opacity-80">{item.createdAt}</p>
+                      <p className="mt-1 text-sm font-medium">{item.targetLabel}</p>
+                      <p className="mt-1 text-xs opacity-80">{item.playbookTitle} · status {item.status}</p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Link href={item.actionPath} className="inline-flex rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs">
+                          Open playbook
+                        </Link>
+                        {item.nextAction ? (
+                          <Link href={item.nextAction.actionPath} className="inline-flex rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs">
+                            {item.nextAction.actionLabel}
+                          </Link>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {weeklyOperatingReview.riskDays.length ? (
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {weeklyOperatingReview.riskDays.map((day) => (
+                <div key={day.date} className="rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+                  <p className="text-xs opacity-80">{day.date}</p>
+                  <p className="mt-1 text-xs opacity-80">degraded: {day.degraded.join(", ")}</p>
+                  <p className="mt-1 text-xs opacity-80">best bet: {day.bestBetSource}</p>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {weeklyOperatingReview.nextWeekBets?.length ? (
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {weeklyOperatingReview.nextWeekBets.map((bet) => (
+                <div key={bet.title} className="rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+                  {(() => {
+                    const matched = feedbackKey === weeklyBetFeedbackKey(bet) && feedbackStatus === "success";
+                    const executionState = matched ? "executed" : bet.executionState;
+                    const executionReason = matched ? feedbackNote || "This bet was executed from monitoring." : bet.executionReason;
+                    const observationStatus = matched ? "handoff_ready" : bet.observationStatus;
+                    const observationWindow = matched ? "next 24-72h" : bet.observationWindow;
+                    const observationNextStep = matched
+                      ? `Start the observation window for ${bet.targetLabel} and watch the first metrics now.`
+                      : bet.observationNextStep;
+                    return (
+                      <>
+                  <p className="text-xs opacity-80">{bet.priority}</p>
+                  <p className="mt-1 text-sm font-medium">{bet.title}</p>
+                  <p className="mt-1 text-xs opacity-80">{bet.reason}</p>
+                  <p className="mt-2 text-xs opacity-80">Target: {bet.targetLabel}</p>
+                  <p className="mt-2 text-xs opacity-80">Automation: {bet.automationEligibility}</p>
+                  <p className="mt-2 text-xs opacity-80">{bet.automationReason}</p>
+                  {bet.automationArtifact ? (
+                    <p className="mt-2 text-xs opacity-80">
+                      Auto draft ready: {bet.automationArtifact.label} · {bet.automationArtifact.status}
+                    </p>
+                  ) : null}
+                  <p className={`mt-2 text-xs ${executionStateTone(executionState)}`}>Execution: {executionState}</p>
+                  <p className="mt-2 text-xs opacity-80">{executionReason}</p>
+                  <p className={`mt-2 text-xs ${observationTone(observationStatus)}`}>Observation: {observationStatus}</p>
+                  <p className="mt-2 text-xs opacity-80">Window: {observationWindow}</p>
+                  <p className="mt-2 text-xs opacity-80">Watch: {bet.observationMetrics.join(" · ")}</p>
+                  <p className="mt-2 text-xs opacity-80">Next observation step: {observationNextStep}</p>
+                  <p className="mt-2 text-xs opacity-80">Promotion: {bet.promotionEligibility}</p>
+                  <p className="mt-2 text-xs opacity-80">{bet.promotionReason}</p>
+                  <p className="mt-2 text-xs opacity-80">Promotion action: {bet.promotionAction.actionLabel}</p>
+                  <p className="mt-2 text-xs opacity-80">{bet.promotionAction.description}</p>
+                  {feedbackKey === weeklyBetFeedbackKey(bet) && feedbackNote ? (
+                    <div className={`mt-3 rounded-xl border px-3 py-2 text-xs ${feedbackTone(feedbackStatus)}`}>Execution feedback: {feedbackNote}</div>
+                  ) : null}
+                  {bet.playbookRef ? (
+                    <>
+                      <p className="mt-2 text-xs opacity-80">
+                        Playbook:{" "}
+                        <Link href={bet.playbookRef.actionPath} className="underline underline-offset-2">
+                          {bet.playbookRef.title}
+                        </Link>
+                      </p>
+                      {bet.playbookRef.latestApplication ? (
+                        <>
+                          <p className="mt-2 text-xs opacity-80">
+                            Latest application: {bet.playbookRef.latestApplication.id} · {bet.playbookRef.latestApplication.status}
+                          </p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <span
+                              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${
+                                playbookStatusMeta(bet.playbookRef.latestApplication.status).badgeClassName
+                              }`}
+                            >
+                              {playbookStatusMeta(bet.playbookRef.latestApplication.status).priority} ·{" "}
+                              {playbookStatusMeta(bet.playbookRef.latestApplication.status).label}
+                            </span>
+                          </div>
+                          {bet.playbookRef.latestApplication.nextAction ? (
+                            <p className="mt-2 text-xs opacity-80">
+                              Next playbook action: {bet.playbookRef.latestApplication.nextAction.actionLabel}
+                            </p>
+                          ) : null}
+                        </>
+                      ) : (
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <span
+                            className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${
+                              playbookStatusMeta("no_application").badgeClassName
+                            }`}
+                          >
+                            {playbookStatusMeta("no_application").priority} · {playbookStatusMeta("no_application").label}
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  ) : null}
+                  {bet.metricSummary ? <p className="mt-2 text-xs opacity-80">{bet.metricSummary}</p> : null}
+                  <p className="mt-2 text-xs opacity-80">Expected impact: {bet.expectedImpact}</p>
+                  <div className="mt-3">
+                    <Link href={bet.actionPath} className="inline-flex rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs">
+                      {bet.actionLabel}
+                    </Link>
+                    {bet.promotionAction.mutation ? (
+                      <form action={onPromotionMutation} className="ml-2 inline-flex">
+                        <input type="hidden" name="mutationKind" value={bet.promotionAction.mutation.kind} />
+                        <input type="hidden" name="targetId" value={bet.promotionAction.mutation.targetId} />
+                        <input type="hidden" name="nextStatus" value={bet.promotionAction.mutation.nextStatus} />
+                        <input type="hidden" name="returnTargetType" value={targetType ?? ""} />
+                        <input type="hidden" name="feedbackKey" value={weeklyBetFeedbackKey(bet)} />
+                        <button disabled={!canPublish} type="submit" className="inline-flex rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50">
+                          {bet.promotionAction.actionLabel}
+                        </button>
+                      </form>
+                    ) : (
+                      <Link href={bet.promotionAction.actionPath} className="ml-2 inline-flex rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs">
+                        {bet.promotionAction.actionLabel}
+                      </Link>
+                    )}
+                    {bet.playbookRef ? (
+                      <form action={onApplyPlaybook} className="ml-2 inline-flex">
+                        <input type="hidden" name="playbookId" value={bet.playbookRef.id} />
+                        <input type="hidden" name="applyTargetType" value={bet.targetType} />
+                        <input type="hidden" name="applyTargetId" value={bet.targetId ?? ""} />
+                        <input type="hidden" name="applyTargetLabel" value={bet.targetLabel} />
+                        <input type="hidden" name="returnTargetType" value={targetType ?? ""} />
+                        <input type="hidden" name="feedbackKey" value={weeklyBetFeedbackKey(bet)} />
+                        <button disabled={!canPublish} type="submit" className="inline-flex rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50">
+                          Apply playbook
+                        </button>
+                      </form>
+                    ) : null}
+                    {bet.playbookRef?.latestApplication?.nextAction ? (
+                      <Link
+                        href={bet.playbookRef.latestApplication.nextAction.actionPath}
+                        className="ml-2 inline-flex rounded-lg bg-zinc-900 px-3 py-1.5 text-xs text-white"
+                      >
+                        {bet.playbookRef.latestApplication.nextAction.actionLabel}
+                      </Link>
+                    ) : null}
+                    {bet.playbookRef ? (
+                      <Link href={bet.playbookRef.actionPath} className="ml-2 inline-flex rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs">
+                        Open playbook
+                      </Link>
+                    ) : null}
+                  </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {governanceOverview ? (
+        <div className={`mt-4 rounded-2xl border px-4 py-4 ${commerceJudgmentTone(governanceOverview.health)}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-wide opacity-80">Top-level governance overview</p>
+              <p className="mt-1 text-base font-medium">{governanceOverview.headline}</p>
+              <p className="mt-1 text-sm opacity-90">{governanceOverview.detail}</p>
+              <p className="mt-2 text-xs opacity-80">Next step: {governanceOverview.actionHint}</p>
+            </div>
+            <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{governanceOverview.primaryLine}</div>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            {governanceOverview.lines.map((line) => (
+              <div key={line.key} className="rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-wide opacity-80">{line.title}</p>
+                    <p className="mt-1 text-sm font-medium">{line.headline}</p>
+                    <p className="mt-1 text-xs opacity-90">{line.detail}</p>
+                  </div>
+                  <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{line.health}</div>
+                </div>
+                <p className="mt-3 text-xs opacity-80">open weight {line.supportingCount}</p>
+                <p className="mt-2 text-xs opacity-80">Next step: {line.actionHint}</p>
+                <div className="mt-3">
+                  <Link href={line.actionPath} className="inline-flex rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs">
+                    {line.actionLabel}
+                  </Link>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {growthLoopOverview ? (
+        <div className={`mt-4 rounded-2xl border px-4 py-4 ${commerceJudgmentTone(growthLoopOverview.health)}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-wide opacity-80">Growth loop overview</p>
+              <p className="mt-1 text-base font-medium">{growthLoopOverview.headline}</p>
+              <p className="mt-1 text-sm opacity-90">{growthLoopOverview.detail}</p>
+              <p className="mt-2 text-xs opacity-80">Next step: {growthLoopOverview.actionHint}</p>
+            </div>
+            <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{growthLoopOverview.health}</div>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            {growthLoopOverview.lines.map((line) => (
+              <div key={line.key} className="rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-wide opacity-80">{line.title}</p>
+                    <p className="mt-1 text-xs opacity-90">{line.detail}</p>
+                  </div>
+                  <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{line.status}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-xs opacity-80">
+            SEO weak targets {growthLoopOverview.metrics.seoLowCtrCount} · weak commerce sources {growthLoopOverview.metrics.weakSources} · purchase gaps {growthLoopOverview.metrics.purchaseMisalignedTargets}
+          </p>
+        </div>
+      ) : null}
+      {geoOverview ? (
+        <div className={`mt-4 rounded-2xl border px-4 py-4 ${commerceJudgmentTone(geoOverview.health)}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-wide opacity-80">GEO overview</p>
+              <p className="mt-1 text-base font-medium">{geoOverview.headline}</p>
+              <p className="mt-1 text-sm opacity-90">{geoOverview.detail}</p>
+              <p className="mt-2 text-xs opacity-80">Next step: {geoOverview.actionHint}</p>
+            </div>
+            <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{geoOverview.health}</div>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            {geoOverview.lines.map((line) => (
+              <div key={line.key} className="rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-wide opacity-80">{line.title}</p>
+                    <p className="mt-1 text-xs opacity-90">{line.detail}</p>
+                  </div>
+                  <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{line.status}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-xs opacity-80">
+            SEO weak targets {geoOverview.metrics.seoLowCtrCount} · AI result CTR {(geoOverview.metrics.resultCtr * 100).toFixed(1)}% · AI purchase/view {(geoOverview.metrics.purchaseRateFromView * 100).toFixed(2)}%
+          </p>
+        </div>
+      ) : null}
+      {growthExperimentOverview ? (
+        <div className={`mt-4 rounded-2xl border px-4 py-4 ${commerceJudgmentTone(growthExperimentOverview.health)}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-wide opacity-80">Growth experiment overview</p>
+              <p className="mt-1 text-base font-medium">{growthExperimentOverview.headline}</p>
+              <p className="mt-1 text-sm opacity-90">{growthExperimentOverview.detail}</p>
+              <p className="mt-2 text-xs opacity-80">Next step: {growthExperimentOverview.actionHint}</p>
+            </div>
+            <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{growthExperimentOverview.health}</div>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            {growthExperimentOverview.groups.slice(0, 3).map((group) => (
+              <div key={group.key} className="rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-wide opacity-80">{group.title}</p>
+                    <p className="mt-1 text-xs opacity-90">
+                      needs {group.counts.needsDecision} · observing {group.counts.observing} · risk {group.counts.followupRisk}
+                    </p>
+                  </div>
+                  <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{group.status}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          {growthExperimentOverview.items.length ? (
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              {growthExperimentOverview.items.slice(0, 6).map((item) => (
+                <div key={`${item.groupKey}:${item.kind}:${item.id ?? item.headline}`} className="rounded-xl border border-current/15 bg-white/70 p-4 text-current">
+                  <p className="text-xs opacity-80">{item.groupTitle} · {item.kind}</p>
+                  <p className="mt-1 text-sm font-medium">{item.headline}</p>
+                  <p className="mt-1 text-xs opacity-80">
+                    status {item.status}{item.effectState ? ` · effect ${item.effectState}` : ""}
+                  </p>
+                  {item.effectMetrics.length ? (
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs opacity-80">
+                      {item.effectMetrics.map((metric) => (
+                        <span key={metric.key}>{metric.label} {metric.value}</span>
+                      ))}
+                    </div>
+                  ) : item.effectSummary ? (
+                    <p className="mt-1 text-xs opacity-80">{item.effectSummary}</p>
+                  ) : null}
+                  <div className="mt-3">
+                    <Link href={item.actionPath} className="inline-flex rounded-lg border border-current/20 bg-white/80 px-3 py-1.5 text-xs">
+                      {item.actionLabel}
+                    </Link>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {seoRuntimeJudgment ? (
+        <div className={`mt-4 rounded-2xl border px-4 py-4 ${seoRuntimeJudgmentTone(seoRuntimeJudgment.health)}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-wide opacity-80">SEO runtime judgment</p>
+              <p className="mt-1 text-base font-medium">{seoRuntimeJudgment.headline}</p>
+              <p className="mt-1 text-sm opacity-90">{seoRuntimeJudgment.detail}</p>
+              <p className="mt-2 text-xs opacity-80">Next step: {seoRuntimeJudgment.actionHint}</p>
+            </div>
+            <div className="rounded-full border border-current/20 px-3 py-1 text-xs">
+              {seoRuntimeJudgment.focusArea}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {resultGovernanceRuntimeJudgment ? (
+        <div className={`mt-4 rounded-2xl border px-4 py-4 ${resultGovernanceJudgmentTone(resultGovernanceRuntimeJudgment.health)}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-wide opacity-80">Result governance judgment</p>
+              <p className="mt-1 text-base font-medium">{resultGovernanceRuntimeJudgment.headline}</p>
+              <p className="mt-1 text-sm opacity-90">{resultGovernanceRuntimeJudgment.detail}</p>
+              <p className="mt-2 text-xs opacity-80">Next step: {resultGovernanceRuntimeJudgment.actionHint}</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{resultGovernanceRuntimeJudgment.focusArea}</div>
+              <Link href="/ops/audit/result-governance" className="rounded-lg border border-current/20 bg-white/70 px-3 py-1.5 text-xs">
+                Open governance audit
+              </Link>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {commerceRuntimeJudgment ? (
+        <div className={`mt-4 rounded-2xl border px-4 py-4 ${commerceJudgmentTone(commerceRuntimeJudgment.health)}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-wide opacity-80">Commerce judgment</p>
+              <p className="mt-1 text-base font-medium">{commerceRuntimeJudgment.headline}</p>
+              <p className="mt-1 text-sm opacity-90">{commerceRuntimeJudgment.detail}</p>
+              <p className="mt-2 text-xs opacity-80">Next step: {commerceRuntimeJudgment.actionHint}</p>
+              {commerceHealthSummary ? <p className="mt-2 text-xs opacity-80">Health summary: {commerceHealthSummary.label} · {commerceHealthSummary.detail}</p> : null}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{commerceRuntimeJudgment.focusArea}</div>
+              <Link href="/ops/audit/commerce" className="rounded-lg border border-current/20 bg-white/70 px-3 py-1.5 text-xs">
+                Open commerce audit
+              </Link>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {commerceSourceSummary?.sources?.length ? (
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          {commerceSourceSummary.sources.map((item) => (
+            <div key={item.key} className={`rounded-2xl border p-4 ${commerceJudgmentTone(item.health)}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-wide opacity-80">{item.source}</p>
+                  <p className="mt-1 text-sm font-medium">{item.headline}</p>
+                  <p className="mt-1 text-xs opacity-90">{item.detail}</p>
+                </div>
+                <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{item.health}</div>
+              </div>
+              <p className="mt-3 text-xs opacity-80">
+                recs {item.counts.recommendations} · proposals {item.counts.proposals} · followup risk {item.counts.followupRisk}
+              </p>
+              <p className="mt-2 text-xs opacity-80">Next step: {item.actionHint}</p>
+              <div className="mt-3">
+                <Link href={item.actionPath} className="inline-flex rounded-lg border border-current/20 bg-white/70 px-3 py-1.5 text-xs">
+                  {item.actionLabel}
+                </Link>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {resultGovernanceLaneSummary?.lanes?.length ? (
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          {resultGovernanceLaneSummary.lanes.map((lane) => (
+            <div key={lane.key} className={`rounded-2xl border p-4 ${resultGovernanceJudgmentTone(lane.health)}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-wide opacity-80">{lane.title} lane</p>
+                  <p className="mt-1 text-sm font-medium">{lane.headline}</p>
+                  <p className="mt-1 text-xs opacity-90">{lane.detail}</p>
+                </div>
+                <div className="rounded-full border border-current/20 px-3 py-1 text-xs">{lane.health}</div>
+              </div>
+              <p className="mt-3 text-xs opacity-80">
+                recs {lane.counts.recommendations} · proposals {lane.counts.proposals} · followups {lane.counts.observationFollowups}
+              </p>
+              <p className="mt-2 text-xs opacity-80">Next step: {lane.actionHint}</p>
+              <div className="mt-3">
+                <Link href={lane.actionPath} className="inline-flex rounded-lg border border-current/20 bg-white/70 px-3 py-1.5 text-xs">
+                  {lane.actionLabel}
+                </Link>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-2xl border border-zinc-200 bg-white p-5">
@@ -194,6 +1374,49 @@ export default async function OpsMonitoringPage({ searchParams }: Props) {
           </p>
         </div>
         <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+          <p className="text-xs text-zinc-500">SEO metrics freshness</p>
+          <p className={`mt-2 text-2xl font-semibold ${freshnessTone(seoFreshness?.status ?? "not_configured")}`}>
+            {seoFreshness?.status ?? "not_configured"}
+          </p>
+          <p className="mt-1 text-xs text-zinc-500">
+            latest {seoFreshness?.latestDate ?? "n/a"} · {seoFreshness?.daysSinceLatest == null ? "n/a" : `${seoFreshness.daysSinceLatest}d old`}
+          </p>
+          <p className="mt-1 text-xs text-zinc-500">
+            tracked {seoFreshness?.targetsTracked ?? 0} · recent {seoFreshness?.targetsWithRecentData ?? 0}
+          </p>
+        </div>
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+          <p className="text-xs text-zinc-500">SEO import gap</p>
+          <p className={`mt-2 text-2xl font-semibold ${importGapTone(seoImportDiagnostics?.latestRun?.status ?? "healthy")}`}>
+            {seoImportDiagnostics?.latestRun?.activeUnmappedPages ?? 0}
+          </p>
+          <p className="mt-1 text-xs text-zinc-500">
+            latest import {seoImportDiagnostics?.latestRun?.createdAt ?? "n/a"}
+          </p>
+          <p className="mt-1 text-xs text-zinc-500">
+            active {seoImportDiagnostics?.recentUnmappedPages?.length ?? 0} · resolved pending refresh{" "}
+            {seoImportDiagnostics?.resolvedRecentUnmappedPages?.length ?? 0}
+          </p>
+        </div>
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+          <p className="text-xs text-zinc-500">SEO sync runtime</p>
+          <p className={`mt-2 text-2xl font-semibold ${seoSyncTone(seoSync.health)}`}>
+            {seoSyncLabel(seoSync.healthLabel)}
+          </p>
+          <p className="mt-1 text-xs text-zinc-500">
+            last run {seoSync.lastRunAt ?? "n/a"} · success {seoSync.lastSuccessAt ?? "n/a"}
+          </p>
+          <p className="mt-1 text-xs text-zinc-500">
+            failures {seoSync.consecutiveFailures} · backoff {seoSync.backoffMinutes}m
+            {seoSync.nextAllowedRunAt ? ` · next ${seoSync.nextAllowedRunAt}` : ""}
+          </p>
+          <p className="mt-1 text-xs text-zinc-500">
+            automation {seoSync.paused ? "paused" : seoSync.enabled ? "running" : "disabled"}
+          </p>
+          <p className="mt-1 text-xs text-zinc-500">{seoSync.healthDetail}</p>
+          {seoSync.recoveryHint ? <p className="mt-1 text-xs text-zinc-500">next step {seoSync.recoveryHint}</p> : null}
+        </div>
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5">
           <p className="text-xs text-zinc-500">Commerce funnel · 24h</p>
           <p className="mt-2 text-2xl font-semibold text-zinc-900">{monitoring.commerceCheckout.checkoutStarts}</p>
           <p className="mt-1 text-xs text-zinc-500">
@@ -236,6 +1459,325 @@ export default async function OpsMonitoringPage({ searchParams }: Props) {
           <p className="mt-1 text-xs text-zinc-500">
             requested {monitoring.refundResults24h.requested} · refunded {monitoring.refundResults24h.refunded} · backlog {monitoring.refundResults24h.backlog}
           </p>
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-zinc-900">SEO metrics import</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              先支持直接粘贴 Search Console 风格 CSV。需要包含 `page/url`、`clicks`、`impressions`，若 CSV 没有 `date` 列，可在下面补一个 import date。
+            </p>
+          </div>
+        </div>
+        <form action={onImportSeoCsv} className="mt-4 space-y-3">
+          <div className="grid gap-3 md:grid-cols-[180px_minmax(0,1fr)]">
+            <label className="text-sm text-zinc-600" htmlFor="importDate">
+              Import date
+            </label>
+            <input
+              id="importDate"
+              name="importDate"
+              type="date"
+              className="rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+            />
+          </div>
+          <div className="grid gap-3">
+            <label className="text-sm text-zinc-600" htmlFor="csvText">
+              CSV text
+            </label>
+            <textarea
+              id="csvText"
+              name="csvText"
+              rows={8}
+              className="w-full rounded-xl border border-zinc-200 px-3 py-3 font-mono text-xs text-zinc-900"
+              placeholder={`page,query,clicks,impressions,ctr,position,date\n/products/kokocang-x,best quiet keyboard,12,340,3.5%,4.2,2026-07-09`}
+            />
+          </div>
+          <div className="flex justify-end">
+            <button type="submit" className="rounded-lg bg-zinc-900 px-4 py-2 text-sm text-white">
+              Import Search Console CSV
+            </button>
+          </div>
+        </form>
+        {seoImportDiagnostics?.latestRun ? (
+          <div className="mt-4 rounded-xl bg-zinc-50 p-4">
+            <p className="text-sm font-medium text-zinc-900">Latest import diagnostics</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              parsed {seoImportDiagnostics.latestRun.parsedRows} · imported {seoImportDiagnostics.latestRun.ingested} · skipped{" "}
+              {seoImportDiagnostics.latestRun.skippedRows} · source {seoImportDiagnostics.latestRun.source}
+            </p>
+            {seoImportDiagnostics.latestRun.resolvedUnmappedPages ? (
+              <p className="mt-1 text-xs text-emerald-700">
+                {seoImportDiagnostics.latestRun.resolvedUnmappedPages} page(s) already registered and waiting for refreshed import data.
+              </p>
+            ) : null}
+            {seoImportDiagnostics.recentUnmappedPages.length ? (
+              <div className="mt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-medium text-zinc-900">Recent unmapped pages</p>
+                  {seoSuggestedTargets.length >= 2 ? (
+                    <form action={onRegisterSeoTargetsBulk}>
+                      <input type="hidden" name="items" value={JSON.stringify(seoSuggestedTargets)} />
+                      <button type="submit" className="text-xs underline underline-offset-4">
+                        Open PRs ({seoSuggestedTargets.length})
+                      </button>
+                    </form>
+                  ) : null}
+                </div>
+                <div className="mt-2 space-y-2">
+                  {seoImportDiagnostics.recentUnmappedPages.slice(0, 6).map((item) => (
+                    <p key={item.pagePath} className="text-xs text-zinc-600">
+                      <code>{item.pagePath}</code> · seen {item.count} time(s)
+                      {item.suggestion?.targetType && item.suggestion?.targetId ? (
+                        <>
+                          {" "}
+                          · suggest {item.suggestion.targetType}:{item.suggestion.targetId}
+                          {item.repoChange ? (
+                            <>
+                              {" "}
+                              · {item.repoChange.prUrl ? (
+                                <Link className="underline underline-offset-4" href={item.repoChange.prUrl}>
+                                  {repoChangeStatusLabel(item.repoChange.status)}
+                                </Link>
+                              ) : (
+                                repoChangeStatusLabel(item.repoChange.status)
+                              )}
+                            </>
+                          ) : null}
+                          <form action={onRegisterSeoTarget} className="inline">
+                            <input type="hidden" name="targetType" value={item.suggestion.targetType} />
+                            <input type="hidden" name="targetId" value={item.suggestion.targetId} />
+                            <input type="hidden" name="targetPath" value={item.pagePath} />
+                            <button type="submit" className="ml-2 text-xs underline underline-offset-4">
+                              Open PR
+                            </button>
+                          </form>
+                        </>
+                      ) : null}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-emerald-700">No unmapped pages in recent imports.</p>
+            )}
+            {seoImportDiagnostics.resolvedRecentUnmappedPages.length ? (
+              <div className="mt-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-medium text-zinc-900">Registered, waiting for refreshed import</p>
+                  <form action={onReplayLatestSeoImport}>
+                    <button type="submit" className="text-xs underline underline-offset-4">
+                      Replay latest import
+                    </button>
+                  </form>
+                </div>
+                <div className="mt-2 space-y-2">
+                  {seoImportDiagnostics.resolvedRecentUnmappedPages.slice(0, 4).map((item) => (
+                    <p key={item.pagePath} className="text-xs text-zinc-600">
+                      <code>{item.pagePath}</code> ·{" "}
+                      {item.repoChange?.prUrl ? (
+                        <Link className="underline underline-offset-4" href={item.repoChange.prUrl}>
+                          {repoChangeStatusLabel(item.repoChange.status)}
+                        </Link>
+                      ) : (
+                        repoChangeStatusLabel(item.repoChange?.status ?? "merged")
+                      )}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="mt-4 rounded-xl bg-zinc-50 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium text-zinc-900">Search Console sync runtime</p>
+              <p className="mt-1 text-xs text-zinc-500">
+                automation {seoSync.enabled ? "enabled" : "disabled"} · config {seoSync.configured ? "ready" : "missing"} · interval{" "}
+                {seoSync.intervalMinutes ? `${seoSync.intervalMinutes}m` : "manual only"}
+              </p>
+              <p className="mt-1 text-xs text-zinc-500">
+                health {seoSync.healthLabel} · {seoSync.healthDetail}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Link href="/ops/audit/seo-sync" className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-900">
+                Open audit page
+              </Link>
+              <form action={onControlSeoSync}>
+                <input type="hidden" name="action" value="retry_now" />
+                <button type="submit" className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-900">
+                  Retry now
+                </button>
+              </form>
+              <form action={onControlSeoSync}>
+                <input type="hidden" name="action" value="clear_backoff" />
+                <button type="submit" className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-900">
+                  Clear backoff
+                </button>
+              </form>
+              <form action={onControlSeoSync}>
+                <input type="hidden" name="action" value={seoSync.paused ? "resume" : "pause"} />
+                <button type="submit" className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-900">
+                  {seoSync.paused ? "Resume automation" : "Pause automation"}
+                </button>
+              </form>
+            </div>
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <div className="rounded-lg bg-white p-3">
+              <p className="text-xs font-medium text-zinc-900">Current state</p>
+              <div className="mt-2 space-y-1 text-xs text-zinc-600">
+                <p>health {seoSync.healthLabel}</p>
+                <p>status {seoSync.lastRunStatus ?? "n/a"}</p>
+                <p>automation {seoSync.paused ? `paused by ${seoSync.pausedBy ?? "unknown"}` : seoSync.enabled ? "enabled" : "disabled"}</p>
+                <p>paused at {seoSync.pausedAt ?? "n/a"}</p>
+                <p>last success {seoSync.lastSuccessAt ?? "n/a"}</p>
+                <p>last failure {seoSync.lastFailureAt ?? "n/a"}</p>
+                <p>last skipped {seoSync.lastSkippedAt ?? "n/a"}</p>
+                <p>last actor {seoSync.lastActor ?? "n/a"}</p>
+                <p>error category {seoSync.lastErrorCategory ?? "n/a"} · code {seoSync.lastErrorCode ?? "n/a"}</p>
+                <p>retryable {seoSync.lastErrorRetryable == null ? "n/a" : seoSync.lastErrorRetryable ? "yes" : "no"}</p>
+                <p>
+                  last rows fetched {seoSync.lastFetchedRows} · ingested {seoSync.lastIngestedRows}
+                </p>
+                {seoSync.nextAllowedRunAt ? <p>next auto retry {seoSync.nextAllowedRunAt}</p> : null}
+                {seoSync.lastError ? <p className="text-rose-700">last error {seoSync.lastError}</p> : null}
+                {seoSync.recoveryHint ? <p className="text-amber-700">recovery {seoSync.recoveryHint}</p> : null}
+                {!seoSync.configured && seoSync.missing.length ? <p>missing {seoSync.missing.join(", ")}</p> : null}
+              </div>
+            </div>
+            <div className="rounded-lg bg-white p-3">
+              <p className="text-xs font-medium text-zinc-900">History summary</p>
+              <div className="mt-2 space-y-1 text-xs text-zinc-600">
+                <p>tracked runs {seoSyncHistory?.totalRunsTracked ?? seoSync.recentRuns.length}</p>
+                <p>
+                  success {seoSyncHistory?.statusCounts.success ?? 0} · failure {seoSyncHistory?.statusCounts.failure ?? 0} · skipped{" "}
+                  {seoSyncHistory?.statusCounts.skipped ?? 0}
+                </p>
+                <p>latest success {seoSyncHistory?.latestSuccessRun?.at ?? "n/a"}</p>
+                <p>latest failure {seoSyncHistory?.latestFailureRun?.at ?? "n/a"}</p>
+                <p>latest skipped {seoSyncHistory?.latestSkippedRun?.at ?? "n/a"}</p>
+                <p>failure streak started {seoSyncHistory?.firstFailureInCurrentStreak?.at ?? "n/a"}</p>
+                {seoSyncHistory?.comparison ? (
+                  <>
+                    <p>
+                      since last success {seoSyncHistory.comparison.changedSinceLastSuccess ? "changed" : "stable"} · latest failure{" "}
+                      {seoSyncHistory.comparison.latestFailure?.category ?? "n/a"}
+                    </p>
+                    {seoSyncHistory.comparison.latestSuccessRows ? (
+                      <p>
+                        last success rows fetched {seoSyncHistory.comparison.latestSuccessRows.fetched} · ingested{" "}
+                        {seoSyncHistory.comparison.latestSuccessRows.ingested}
+                      </p>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+              <p className="mt-4 text-xs font-medium text-zinc-900">Recent runs</p>
+              <div className="mt-2 max-h-[28rem] space-y-2 overflow-auto pr-1">
+                {(seoSyncHistory?.recentRuns?.length ? seoSyncHistory.recentRuns : seoSync.recentRuns).length ? (
+                  (seoSyncHistory?.recentRuns?.length ? seoSyncHistory.recentRuns : seoSync.recentRuns).slice(0, 10).map((run, index) => (
+                    <div key={`${run.at}-${index}`} className="rounded-lg border border-zinc-200 px-3 py-2">
+                      <p className={`text-xs font-medium ${run.status === "success" ? "text-emerald-700" : run.status === "failure" ? "text-rose-700" : "text-amber-700"}`}>{run.status}</p>
+                      <p className="mt-1 text-xs text-zinc-600">
+                        {run.at} · actor {run.actor ?? "n/a"}
+                      </p>
+                      <p className="mt-1 text-xs text-zinc-600">
+                        rows {run.fetchedRows} fetched · {run.ingestedRows} ingested
+                      </p>
+                      {run.request?.startDate || run.request?.endDate ? (
+                        <p className="mt-1 text-xs text-zinc-600">
+                          window {run.request?.startDate ?? "n/a"} → {run.request?.endDate ?? "n/a"}
+                        </p>
+                      ) : null}
+                      {run.errorCategory || run.errorCode ? (
+                        <p className="mt-1 text-xs text-zinc-600">
+                          category {run.errorCategory ?? "n/a"} · code {run.errorCode ?? "n/a"} · retryable{" "}
+                          {run.errorRetryable == null ? "n/a" : run.errorRetryable ? "yes" : "no"}
+                        </p>
+                      ) : null}
+                      {run.error ? <p className="mt-1 text-xs text-rose-700">{run.error}</p> : null}
+                      {run.recoveryHint ? <p className="mt-1 text-xs text-amber-700">{run.recoveryHint}</p> : null}
+                      {run.reason ? <p className="mt-1 text-xs text-amber-700">{run.reason}</p> : null}
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-xs text-zinc-500">No sync runs recorded yet.</p>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <div className="rounded-lg bg-white p-3">
+              <p className="text-xs font-medium text-zinc-900">Recovery review</p>
+              <div className="mt-2 space-y-1 text-xs text-zinc-600">
+                <p>status {seoSyncRecoveryReview?.label ?? "n/a"}</p>
+                <p>{seoSyncRecoveryReview?.detail ?? "No recovery review yet."}</p>
+                <p>
+                  latest recovery action {seoSyncRecoveryReview?.latestAction?.action ?? "n/a"} ·{" "}
+                  {seoSyncRecoveryReview?.latestAction?.at ?? "n/a"}
+                </p>
+                {seoSyncRecoveryReview?.latestAction?.nextRun ? (
+                  <p>
+                    next run {seoSyncRecoveryReview.latestAction.nextRun.status ?? "n/a"} ·{" "}
+                    {seoSyncRecoveryReview.latestAction.nextRun.at ?? "n/a"}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+            <div className="rounded-lg bg-white p-3">
+              <p className="text-xs font-medium text-zinc-900">Control audit</p>
+              <div className="mt-2 space-y-1 text-xs text-zinc-600">
+                <p>tracked actions {seoSyncControlAudit?.totalActionsTracked ?? 0}</p>
+                <p>
+                  retry {seoSyncControlAudit?.actionCounts.retry_now ?? 0} · pause {seoSyncControlAudit?.actionCounts.pause ?? 0} · resume{" "}
+                  {seoSyncControlAudit?.actionCounts.resume ?? 0} · clear backoff {seoSyncControlAudit?.actionCounts.clear_backoff ?? 0}
+                </p>
+                <p>latest action {seoSyncControlAudit?.latestAction?.action ?? "n/a"}</p>
+                <p>latest actor {seoSyncControlAudit?.latestAction?.actor ?? "n/a"}</p>
+                <p>latest at {seoSyncControlAudit?.latestAction?.at ?? "n/a"}</p>
+                <p>
+                  next run after latest action {seoSyncControlAudit?.latestAction?.nextRun?.status ?? "n/a"}
+                  {seoSyncControlAudit?.latestAction?.nextRun?.at ? ` · ${seoSyncControlAudit.latestAction.nextRun.at}` : ""}
+                </p>
+              </div>
+            </div>
+            <div className="rounded-lg bg-white p-3">
+              <p className="text-xs font-medium text-zinc-900">Recent manual interventions</p>
+              <div className="mt-2 max-h-56 space-y-2 overflow-auto pr-1">
+                {seoSyncControlAudit?.recentActions?.length ? (
+                  seoSyncControlAudit.recentActions.map((item, index) => (
+                    <div key={`${item.at}-${index}`} className="rounded-lg border border-zinc-200 px-3 py-2">
+                      <p className="text-xs font-medium text-zinc-900">{item.action ?? "unknown"}</p>
+                      <p className="mt-1 text-xs text-zinc-600">
+                        {item.at ?? "n/a"} · actor {item.actor ?? "n/a"}
+                      </p>
+                      <p className="mt-1 text-xs text-zinc-600">
+                        assessment {item.assessment?.label ?? "n/a"} · {item.assessment?.detail ?? "n/a"}
+                      </p>
+                      {item.note ? <p className="mt-1 text-xs text-zinc-600">{item.note}</p> : null}
+                      {item.nextRun ? (
+                        <p className="mt-1 text-xs text-zinc-600">
+                          next run {item.nextRun.status ?? "n/a"} · {item.nextRun.at ?? "n/a"}
+                          {item.nextRun.status === "success" ? ` · ingested ${item.nextRun.ingestedRows}` : ""}
+                          {item.nextRun.errorCategory ? ` · ${item.nextRun.errorCategory}` : ""}
+                          {item.nextRun.reason ? ` · ${item.nextRun.reason}` : ""}
+                        </p>
+                      ) : (
+                        <p className="mt-1 text-xs text-zinc-500">No sync run has been recorded after this action yet.</p>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-xs text-zinc-500">No manual control actions recorded yet.</p>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
