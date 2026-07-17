@@ -21,6 +21,7 @@ const events = Array.isArray(persisted.events) ? persisted.events : [];
 const meta = persisted.meta && typeof persisted.meta === "object"
   ? persisted.meta
   : { lastBatchRun: null, batchRuns: [], consecutiveBatchFailures: 0 };
+if (!Array.isArray(meta.dailyMonitoringSnapshots)) meta.dailyMonitoringSnapshots = [];
 const { computeRates, normalizeNumber } = require("./metrics");
 
 // Ensure default rules file exists so proposals can reference an explicit config location.
@@ -451,6 +452,59 @@ function persist() {
     proposals,
     meta,
   });
+}
+
+function listDailyMonitoringSnapshots(limit = 14) {
+  const normalizedLimit = Math.min(90, Math.max(1, Number(limit || 14)));
+  return (Array.isArray(meta.dailyMonitoringSnapshots) ? meta.dailyMonitoringSnapshots : [])
+    .slice()
+    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
+    .slice(0, normalizedLimit);
+}
+
+function upsertDailyMonitoringSnapshot(input = {}) {
+  const date = String(input.date || "").trim();
+  if (!date) return null;
+  const next = {
+    date,
+    recordedAt: String(input.recordedAt || nowIso()),
+    todaysBestBet: input.todaysBestBet && typeof input.todaysBestBet === "object" ? { ...input.todaysBestBet } : null,
+    governanceOverview: input.governanceOverview && typeof input.governanceOverview === "object"
+      ? {
+          health: input.governanceOverview.health ?? "healthy",
+          primaryLine: input.governanceOverview.primaryLine ?? "seo",
+          headline: input.governanceOverview.headline ?? null,
+        }
+      : null,
+    growthLoopOverview: input.growthLoopOverview && typeof input.growthLoopOverview === "object"
+      ? {
+          health: input.growthLoopOverview.health ?? "healthy",
+          headline: input.growthLoopOverview.headline ?? null,
+        }
+      : null,
+    geoOverview: input.geoOverview && typeof input.geoOverview === "object"
+      ? {
+          health: input.geoOverview.health ?? "healthy",
+          headline: input.geoOverview.headline ?? null,
+        }
+      : null,
+    growthExperimentOverview: input.growthExperimentOverview && typeof input.growthExperimentOverview === "object"
+      ? {
+          health: input.growthExperimentOverview.health ?? "healthy",
+          headline: input.growthExperimentOverview.headline ?? null,
+        }
+      : null,
+  };
+  const items = Array.isArray(meta.dailyMonitoringSnapshots) ? meta.dailyMonitoringSnapshots : [];
+  const idx = items.findIndex((item) => String(item?.date || "") === date);
+  if (idx >= 0) items[idx] = next;
+  else items.unshift(next);
+  meta.dailyMonitoringSnapshots = items
+    .slice()
+    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
+    .slice(0, 30);
+  persist();
+  return next;
 }
 
 function mergeUniqueList(list, nextValue, limit = 20) {
@@ -4727,6 +4781,8 @@ module.exports = {
   listRecommendationRuleStats,
   resolveRecommendation,
   createRuleTuningProposal,
+  listDailyMonitoringSnapshots,
+  upsertDailyMonitoringSnapshot,
   getRuleTuningProposal,
   listRuleTuningProposals,
   transitionRuleTuningProposal,

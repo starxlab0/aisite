@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -185,8 +186,11 @@ test("monitoring summary aggregates stale workflow, publish anomalies, and purch
     delete process.env.NEXT_PUBLIC_SANITY_DATASET;
   });
 
+  const recentPurchaseAt1 = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+  const recentPurchaseAt2 = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+
   trackEvent({
-    at: "2026-07-01T00:00:00.000Z",
+    at: recentPurchaseAt1,
     targetType: "product",
     targetId: "kokocang-x",
     eventType: "purchase",
@@ -194,7 +198,7 @@ test("monitoring summary aggregates stale workflow, publish anomalies, and purch
     dedupeKey: "order:11:product:kokocang-x",
   });
   trackEvent({
-    at: "2026-07-02T00:00:00.000Z",
+    at: recentPurchaseAt2,
     targetType: "product",
     targetId: "kokocang-x",
     eventType: "purchase",
@@ -373,6 +377,12 @@ test("monitoring summary creates AI concierge tuning recommendation for low entr
   assert.ok(typeof summary.aiConcierge.governance.counts.mainNeedsDecision === "number");
   assert.ok(Array.isArray(summary.governanceGroups));
   assert.ok(summary.governanceGroups.some((group) => group.key === "ai_concierge"));
+  assert.ok(summary.geoOverview);
+  assert.ok(["healthy", "warning", "degraded"].includes(summary.geoOverview.health));
+  assert.ok(Array.isArray(summary.geoOverview.lines));
+  assert.ok(summary.geoOverview.lines.some((line) => line.key === "discoverability"));
+  assert.ok(summary.geoOverview.lines.some((line) => line.key === "answer_quality"));
+  assert.ok(summary.geoOverview.lines.some((line) => line.key === "assisted_commerce"));
   assert.ok(recs.some((item) => item.ruleId === "ai-concierge-funnel-dropoff" && item.context?.metricKey === "entry_ctr"));
   assert.ok(proposals.items.some((item) => item.ruleId === "ai-concierge-strategy"));
   assert.ok(repoChanges.length > 0);
@@ -435,6 +445,196 @@ test("monitoring summary includes commerce checkout funnel metrics", async (t) =
   assert.equal(summary.commerceCheckout.checkoutDropoff, 1);
   assert.equal(summary.commerceCheckout.purchases24h, 1);
   assert.equal(summary.commerceCheckout.checkoutCompletionRate, 0.5);
+});
+
+test("commerce domain snapshot exposes purchase diagnostics and weak checkout sources", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { trackEvent, ingestSnapshot, listTargetSummaries, getPurchaseDiagnostics, listTrackedEvents } = require(path.join(
+    repoRoot,
+    "src/signals/store.js",
+  ));
+  const { createCommerceDomain } = require(path.join(repoRoot, "src/ops/commerce-domain.js"));
+
+  const at = new Date().toISOString();
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "kokocang-x",
+    eventType: "purchase",
+    source: "web",
+    dedupeKey: "order:commerce-domain:purchase",
+  });
+  ingestSnapshot({
+    capturedAt: at,
+    targetType: "product",
+    targetId: "kokocang-x",
+    windowDays: 7,
+    metrics: {
+      views: 120,
+      ctaClicks: 12,
+      addToCart: 6,
+      purchases: 0,
+    },
+    source: "aggregated",
+  });
+
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_checkout_weak",
+    eventType: "checkout_start",
+    source: "web",
+    dedupeKey: "weak-1",
+    metadata: { attribution: { src: "guide" } },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_checkout_weak",
+    eventType: "checkout_start",
+    source: "web",
+    dedupeKey: "weak-2",
+    metadata: { attribution: { src: "guide" } },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_checkout_weak",
+    eventType: "checkout_start",
+    source: "web",
+    dedupeKey: "weak-3",
+    metadata: { attribution: { src: "guide" } },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_checkout_weak",
+    eventType: "checkout_complete",
+    source: "web",
+    dedupeKey: "weak-1",
+    metadata: { attribution: { src: "guide" } },
+  });
+
+  const commerceDomain = createCommerceDomain({
+    listTargetSummaries,
+    getPurchaseDiagnostics,
+    listTrackedEvents,
+  });
+
+  const snapshot = commerceDomain.getCommerceMonitoringSnapshot({ targetType: "product", sinceHours: 24 });
+  assert.ok(snapshot.purchaseDiagnostics.some((item) => item.targetType === "product" && item.targetId === "kokocang-x"));
+  assert.ok(snapshot.weakCheckoutSources.some((item) => item.source === "guide"));
+  assert.ok(
+    snapshot.commerceRecommendationCandidates?.checkoutCompletionDropoff?.some((item) => item.sourceKey === "guide" && item.threshold === 0.4),
+  );
+  assert.ok(snapshot.commerceAlerts?.some((item) => item.title.includes("Purchase reconciliation needs review")));
+  assert.ok(snapshot.commerceAlerts?.some((item) => item.title.includes("Checkout completion is low for source guide")));
+});
+
+test("commerceOps facade exposes commerce monitoring snapshot contract", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { trackEvent, ingestSnapshot, createCheckoutCompletionRecommendation } = require(path.join(repoRoot, "src/signals/store.js"));
+  const { commerceOps } = require(path.join(repoRoot, "src/ops/store.js"));
+
+  const at = new Date().toISOString();
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "kokocang-x",
+    eventType: "purchase",
+    source: "web",
+    dedupeKey: "commerce-ops:purchase",
+  });
+  ingestSnapshot({
+    capturedAt: at,
+    targetType: "product",
+    targetId: "kokocang-x",
+    windowDays: 7,
+    metrics: { views: 80, ctaClicks: 10, addToCart: 4, purchases: 0 },
+    source: "aggregated",
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "checkout-guide",
+    eventType: "checkout_start",
+    source: "web",
+    dedupeKey: "commerce-ops:checkout-1",
+    metadata: { attribution: { src: "guide" } },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "checkout-guide",
+    eventType: "checkout_start",
+    source: "web",
+    dedupeKey: "commerce-ops:checkout-2",
+    metadata: { attribution: { src: "guide" } },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "checkout-guide",
+    eventType: "checkout_start",
+    source: "web",
+    dedupeKey: "commerce-ops:checkout-3",
+    metadata: { attribution: { src: "guide" } },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "checkout-guide",
+    eventType: "checkout_complete",
+    source: "web",
+    dedupeKey: "commerce-ops:checkout-1",
+    metadata: { attribution: { src: "guide" } },
+  });
+
+  const snapshot = commerceOps.getCommerceMonitoringSnapshot({
+    targetType: "product",
+    sinceHours: 24,
+    thresholds: { purchaseGapAbs: { critical: 3 } },
+  });
+  assert.ok(snapshot.purchaseDiagnostics.some((item) => item.targetId === "kokocang-x"));
+  assert.ok(snapshot.commerceRecommendationCandidates?.checkoutCompletionDropoff?.some((item) => item.sourceKey === "guide"));
+  assert.ok(snapshot.commerceAlerts?.some((item) => item.title.includes("Purchase reconciliation needs review")));
+
+  createCheckoutCompletionRecommendation({
+    sourceKey: "guide",
+    observedRate: 0.25,
+    threshold: 0.4,
+    checkoutStarts: 4,
+    checkoutCompletes: 1,
+    checkoutDropoff: 3,
+    targetBreakdown: [],
+    weakestPath: null,
+  });
+  const withProposalCandidates = commerceOps.getCommerceMonitoringSnapshot({
+    targetType: "product",
+    sinceHours: 24,
+    thresholds: { purchaseGapAbs: { critical: 3 } },
+  });
+  assert.ok(withProposalCandidates.commerceProposalCandidates?.some((item) => item.targetId === "guide"));
+});
+
+test("commerceOps contract metadata matches compat exports", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const store = require(path.join(repoRoot, "src/ops/store.js"));
+
+  assert.equal(store.commerceOpsContract?.entry, "commerceOps");
+  assert.ok(Array.isArray(store.commerceOpsContract?.methods));
+  assert.ok(Array.isArray(store.commerceOpsContract?.compatExports));
+
+  store.commerceOpsContract.methods.forEach((name) => {
+    assert.equal(typeof store.commerceOps[name], "function");
+  });
+
+  store.commerceOpsContract.compatExports.forEach((name) => {
+    assert.equal(store[name], store.commerceOps[name]);
+  });
 });
 
 test("monitoring summary creates SEO/GEO content recommendations and prepares drafts", async (t) => {
@@ -529,9 +729,637 @@ test("monitoring summary creates SEO performance recommendations from ingested m
   assert.ok(lowCtr.preparedDraft?.draftId);
   assert.ok(Array.isArray(lowCtr.context?.actionHints));
   assert.ok(lowCtr.context.actionHints.length >= 3);
+  assert.equal(summary.seoFreshness?.status, "healthy");
+  assert.equal(summary.seoFreshness?.daysSinceLatest, 0);
   assert.ok(summary.seoPerformance?.targets?.length);
   const first = summary.seoPerformance.targets[0];
   assert.ok(typeof first.issueScore === "number");
+});
+
+test("monitoring summary flags stale SEO metrics freshness", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { ingestSeoMetrics } = require(path.join(repoRoot, "src/ops/store.js"));
+  const { buildMonitoringSummary } = require(path.join(repoRoot, "src/ops/monitoring.js"));
+  const previousFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, status: 200, statusText: "OK" });
+  t.after(() => {
+    global.fetch = previousFetch;
+  });
+
+  const staleDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  ingestSeoMetrics({
+    actor: "ops:test",
+    source: "test",
+    rows: [{ date: staleDate, targetType: "collection", targetId: "first-time", impressions: 90, clicks: 5, position: 7.5 }],
+  });
+
+  const summary = await buildMonitoringSummary({});
+  assert.equal(summary.seoFreshness?.status, "critical");
+  assert.ok(summary.alerts.some((item) => String(item.title || "").includes("SEO metrics are stale")));
+});
+
+test("search console style SEO import normalizes csv rows into tracked targets", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { importSeoMetricsFromSearchConsole, listSeoMetrics } = require(path.join(repoRoot, "src/ops/store.js"));
+  const importDate = new Date().toISOString().slice(0, 10);
+  const csvText = [
+    "page,query,clicks,impressions,ctr,position",
+    "/product/kokocang-x,best quiet keyboard,12,340,3.5%,4.2",
+    "https://kokocang.com/collection/first-time,starter set,8,220,3.64%,5.1",
+    "/unknown/path,unmapped query,4,80,5%,8.5",
+  ].join("\n");
+
+  const result = importSeoMetricsFromSearchConsole({
+    actor: "ops:test",
+    csvText,
+    importDate,
+    source: "search_console",
+  });
+
+  assert.equal(result.parsedRows, 3);
+  assert.equal(result.normalizedRows, 2);
+  assert.equal(result.ingested, 2);
+  assert.equal(result.skippedRows, 1);
+  assert.ok(result.unmappedPages.includes("/unknown/path"));
+
+  const items = listSeoMetrics({ sinceDays: 7, limit: 20 }).items;
+  assert.ok(items.some((row) => row.targetType === "product" && row.targetId === "kokocang-x" && row.ctr === 0.035));
+  assert.ok(items.some((row) => row.targetType === "collection" && row.targetId === "first-time"));
+});
+
+test("search console api fetch maps rows and imports through seoOps", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const previousFetch = global.fetch;
+  const previousEnv = {
+    SEARCH_CONSOLE_SITE_URL: process.env.SEARCH_CONSOLE_SITE_URL,
+    SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL: process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL,
+    SEARCH_CONSOLE_PRIVATE_KEY: process.env.SEARCH_CONSOLE_PRIVATE_KEY,
+  };
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  process.env.SEARCH_CONSOLE_SITE_URL = "https://example.com/";
+  process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL = "seo-sync@example.iam.gserviceaccount.com";
+  process.env.SEARCH_CONSOLE_PRIVATE_KEY = privateKey.export({ format: "pem", type: "pkcs8" }).toString("utf8");
+
+  const fetchCalls = [];
+  global.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url: String(url), init });
+    if (String(url).includes("oauth2.googleapis.com/token")) {
+      return {
+        ok: true,
+        json: async () => ({ access_token: "gsc-token" }),
+      };
+    }
+    if (String(url).includes("searchconsole.googleapis.com")) {
+      return {
+        ok: true,
+        json: async () => ({
+          rows: [
+            {
+              keys: ["/product/kokocang-x", "kokocang x", "2026-07-08"],
+              clicks: 12,
+              impressions: 345,
+              ctr: 0.0347826087,
+              position: 4.2,
+            },
+          ],
+        }),
+      };
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  t.after(() => {
+    global.fetch = previousFetch;
+    process.env.SEARCH_CONSOLE_SITE_URL = previousEnv.SEARCH_CONSOLE_SITE_URL;
+    process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL = previousEnv.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL;
+    process.env.SEARCH_CONSOLE_PRIVATE_KEY = previousEnv.SEARCH_CONSOLE_PRIVATE_KEY;
+  });
+
+  const { fetchSearchConsoleRows } = require(path.join(repoRoot, "src/ops/search-console.js"));
+  const { seoOps } = require(path.join(repoRoot, "src/ops/store.js"));
+
+  const fetched = await fetchSearchConsoleRows({
+    startDate: "2026-07-08",
+    endDate: "2026-07-08",
+  });
+  assert.equal(fetched.rowCount, 1);
+  assert.equal(fetched.rows[0].page, "/product/kokocang-x");
+  assert.equal(fetched.rows[0].query, "kokocang x");
+  assert.equal(fetched.rows[0].date, "2026-07-08");
+
+  const imported = seoOps.importSeoMetricsFromSearchConsole({
+    actor: "tester:gsc",
+    rows: fetched.rows,
+    importDate: fetched.request.endDate,
+    source: "search_console_api",
+  });
+  assert.equal(imported.ingested, 1);
+  assert.equal(imported.parsedRows, 1);
+  assert.equal(imported.unmappedPages.length, 0);
+
+  const metrics = seoOps.listSeoMetrics({ targetType: "product", targetId: "kokocang-x" });
+  assert.equal(metrics.items[0]?.clicks, 12);
+  assert.equal(metrics.items[0]?.impressions, 345);
+  assert.equal(fetchCalls.length, 2);
+});
+
+test("search console sync runner records success status", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const previousFetch = global.fetch;
+  const previousEnv = {
+    SEARCH_CONSOLE_SITE_URL: process.env.SEARCH_CONSOLE_SITE_URL,
+    SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL: process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL,
+    SEARCH_CONSOLE_PRIVATE_KEY: process.env.SEARCH_CONSOLE_PRIVATE_KEY,
+    SEARCH_CONSOLE_SYNC_ENABLED: process.env.SEARCH_CONSOLE_SYNC_ENABLED,
+  };
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  process.env.SEARCH_CONSOLE_SITE_URL = "https://example.com/";
+  process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL = "seo-sync@example.iam.gserviceaccount.com";
+  process.env.SEARCH_CONSOLE_PRIVATE_KEY = privateKey.export({ format: "pem", type: "pkcs8" }).toString("utf8");
+  process.env.SEARCH_CONSOLE_SYNC_ENABLED = "true";
+
+  global.fetch = async (url) => {
+    if (String(url).includes("oauth2.googleapis.com/token")) {
+      return {
+        ok: true,
+        json: async () => ({ access_token: "gsc-token" }),
+      };
+    }
+    if (String(url).includes("searchconsole.googleapis.com")) {
+      return {
+        ok: true,
+        json: async () => ({
+          rows: [
+            {
+              keys: ["/product/kokocang-x", "kokocang x", "2026-07-08"],
+              clicks: 6,
+              impressions: 120,
+              ctr: 0.05,
+              position: 3.4,
+            },
+          ],
+        }),
+      };
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  t.after(() => {
+    global.fetch = previousFetch;
+    process.env.SEARCH_CONSOLE_SITE_URL = previousEnv.SEARCH_CONSOLE_SITE_URL;
+    process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL = previousEnv.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL;
+    process.env.SEARCH_CONSOLE_PRIVATE_KEY = previousEnv.SEARCH_CONSOLE_PRIVATE_KEY;
+    process.env.SEARCH_CONSOLE_SYNC_ENABLED = previousEnv.SEARCH_CONSOLE_SYNC_ENABLED;
+  });
+
+  const { syncSeoMetricsFromSearchConsole } = require(path.join(repoRoot, "src/ops/seo-search-console-sync.js"));
+  const { getSeoSyncStatus } = require(path.join(repoRoot, "src/ops/store.js"));
+
+  const result = await syncSeoMetricsFromSearchConsole({ actor: "tester:sync" });
+  assert.equal(result.ingested, 1);
+  const status = getSeoSyncStatus();
+  assert.equal(status.lastRunStatus, "success");
+  assert.equal(status.lastIngestedRows, 1);
+  assert.equal(status.lastFetchedRows, 1);
+  assert.equal(status.lastActor, "tester:sync");
+  assert.equal(status.recentRuns[0]?.status, "success");
+  assert.equal(status.recentRuns[0]?.ingestedRows, 1);
+});
+
+test("automated search console sync backs off after failure and records skipped retry", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const previousFetch = global.fetch;
+  const previousEnv = {
+    SEARCH_CONSOLE_SITE_URL: process.env.SEARCH_CONSOLE_SITE_URL,
+    SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL: process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL,
+    SEARCH_CONSOLE_PRIVATE_KEY: process.env.SEARCH_CONSOLE_PRIVATE_KEY,
+    SEARCH_CONSOLE_SYNC_ENABLED: process.env.SEARCH_CONSOLE_SYNC_ENABLED,
+    SEARCH_CONSOLE_SYNC_FAILURE_BASE_DELAY_MINUTES: process.env.SEARCH_CONSOLE_SYNC_FAILURE_BASE_DELAY_MINUTES,
+    SEARCH_CONSOLE_SYNC_FAILURE_MAX_DELAY_MINUTES: process.env.SEARCH_CONSOLE_SYNC_FAILURE_MAX_DELAY_MINUTES,
+  };
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  process.env.SEARCH_CONSOLE_SITE_URL = "https://example.com/";
+  process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL = "seo-sync@example.iam.gserviceaccount.com";
+  process.env.SEARCH_CONSOLE_PRIVATE_KEY = privateKey.export({ format: "pem", type: "pkcs8" }).toString("utf8");
+  process.env.SEARCH_CONSOLE_SYNC_ENABLED = "true";
+  process.env.SEARCH_CONSOLE_SYNC_FAILURE_BASE_DELAY_MINUTES = "15";
+  process.env.SEARCH_CONSOLE_SYNC_FAILURE_MAX_DELAY_MINUTES = "60";
+
+  global.fetch = async (url) => {
+    if (String(url).includes("oauth2.googleapis.com/token")) {
+      return {
+        ok: true,
+        json: async () => ({ access_token: "gsc-token" }),
+      };
+    }
+    if (String(url).includes("searchconsole.googleapis.com")) {
+      return {
+        ok: false,
+        status: 500,
+        text: async () => "temporary upstream error",
+      };
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  t.after(() => {
+    global.fetch = previousFetch;
+    process.env.SEARCH_CONSOLE_SITE_URL = previousEnv.SEARCH_CONSOLE_SITE_URL;
+    process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL = previousEnv.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL;
+    process.env.SEARCH_CONSOLE_PRIVATE_KEY = previousEnv.SEARCH_CONSOLE_PRIVATE_KEY;
+    process.env.SEARCH_CONSOLE_SYNC_ENABLED = previousEnv.SEARCH_CONSOLE_SYNC_ENABLED;
+    process.env.SEARCH_CONSOLE_SYNC_FAILURE_BASE_DELAY_MINUTES = previousEnv.SEARCH_CONSOLE_SYNC_FAILURE_BASE_DELAY_MINUTES;
+    process.env.SEARCH_CONSOLE_SYNC_FAILURE_MAX_DELAY_MINUTES = previousEnv.SEARCH_CONSOLE_SYNC_FAILURE_MAX_DELAY_MINUTES;
+  });
+
+  const { syncSeoMetricsFromSearchConsole } = require(path.join(repoRoot, "src/ops/seo-search-console-sync.js"));
+  const { getSeoSyncStatus } = require(path.join(repoRoot, "src/ops/store.js"));
+
+  await assert.rejects(() => syncSeoMetricsFromSearchConsole({ actor: "tester:auto", automated: true }), /Search Console API 500/);
+  const failedStatus = getSeoSyncStatus();
+  assert.equal(failedStatus.lastRunStatus, "failure");
+  assert.equal(failedStatus.consecutiveFailures, 1);
+  assert.equal(failedStatus.backoffMinutes, 15);
+  assert.ok(failedStatus.nextAllowedRunAt);
+
+  const skipped = await syncSeoMetricsFromSearchConsole({ actor: "tester:auto", automated: true });
+  assert.equal(skipped.status, "skipped");
+  const skippedStatus = getSeoSyncStatus();
+  assert.equal(skippedStatus.lastRunStatus, "skipped");
+  assert.equal(skippedStatus.consecutiveFailures, 1);
+  assert.equal(skippedStatus.recentRuns[0]?.status, "skipped");
+  assert.equal(skippedStatus.recentRuns[1]?.status, "failure");
+});
+
+test("automated search console sync skips when paused", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const previousFetch = global.fetch;
+  global.fetch = async () => {
+    throw new Error("fetch should not be called while paused");
+  };
+  t.after(() => {
+    global.fetch = previousFetch;
+  });
+
+  const { setSeoSyncPaused, getSeoSyncStatus } = require(path.join(repoRoot, "src/ops/store.js"));
+  const { syncSeoMetricsFromSearchConsole } = require(path.join(repoRoot, "src/ops/seo-search-console-sync.js"));
+
+  setSeoSyncPaused({ paused: true, actor: "tester:pause" });
+  const result = await syncSeoMetricsFromSearchConsole({ actor: "tester:auto", automated: true });
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "paused");
+  const status = getSeoSyncStatus();
+  assert.equal(status.paused, true);
+  assert.equal(status.lastRunStatus, "skipped");
+  assert.equal(status.recentRuns[0]?.reason, "paused");
+});
+
+test("clear search console backoff resets next retry window", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { recordSeoSyncRun, clearSeoSyncBackoff, getSeoSyncStatus } = require(path.join(repoRoot, "src/ops/store.js"));
+
+  recordSeoSyncRun({
+    status: "failure",
+    actor: "tester:backoff",
+    error: "upstream failed",
+    nextAllowedRunAt: "2026-07-12T10:00:00.000Z",
+    backoffMinutes: 30,
+  });
+  const cleared = clearSeoSyncBackoff({ actor: "tester:clear" });
+  assert.equal(cleared.nextAllowedRunAt, null);
+  assert.equal(cleared.backoffMinutes, 0);
+  assert.equal(cleared.lastActor, "tester:clear");
+  const status = getSeoSyncStatus();
+  assert.equal(status.nextAllowedRunAt, null);
+  assert.equal(status.backoffMinutes, 0);
+});
+
+test("monitoring summary warns when search console automation is enabled but not configured", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const previousFetch = global.fetch;
+  const previousEnv = {
+    SEARCH_CONSOLE_SYNC_ENABLED: process.env.SEARCH_CONSOLE_SYNC_ENABLED,
+    SEARCH_CONSOLE_SYNC_INTERVAL_MINUTES: process.env.SEARCH_CONSOLE_SYNC_INTERVAL_MINUTES,
+    SEARCH_CONSOLE_SITE_URL: process.env.SEARCH_CONSOLE_SITE_URL,
+    SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL: process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL,
+    SEARCH_CONSOLE_PRIVATE_KEY: process.env.SEARCH_CONSOLE_PRIVATE_KEY,
+  };
+  process.env.SEARCH_CONSOLE_SYNC_ENABLED = "true";
+  process.env.SEARCH_CONSOLE_SYNC_INTERVAL_MINUTES = "60";
+  delete process.env.SEARCH_CONSOLE_SITE_URL;
+  delete process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL;
+  delete process.env.SEARCH_CONSOLE_PRIVATE_KEY;
+  global.fetch = async () => ({ ok: true, status: 200, statusText: "OK" });
+  t.after(() => {
+    global.fetch = previousFetch;
+    process.env.SEARCH_CONSOLE_SYNC_ENABLED = previousEnv.SEARCH_CONSOLE_SYNC_ENABLED;
+    process.env.SEARCH_CONSOLE_SYNC_INTERVAL_MINUTES = previousEnv.SEARCH_CONSOLE_SYNC_INTERVAL_MINUTES;
+    process.env.SEARCH_CONSOLE_SITE_URL = previousEnv.SEARCH_CONSOLE_SITE_URL;
+    process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL = previousEnv.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL;
+    process.env.SEARCH_CONSOLE_PRIVATE_KEY = previousEnv.SEARCH_CONSOLE_PRIVATE_KEY;
+  });
+
+  const { buildMonitoringSummary } = require(path.join(repoRoot, "src/ops/monitoring.js"));
+  const summary = await buildMonitoringSummary({});
+  assert.equal(summary.runtime.seoSync.enabled, true);
+  assert.equal(summary.runtime.seoSync.configured, false);
+  assert.equal(summary.runtime.seoSync.health, "not_configured");
+  assert.equal(summary.seoRuntimeJudgment.health, "warning");
+  assert.ok(["sync", "combined"].includes(summary.seoRuntimeJudgment.focusArea));
+  assert.ok(summary.alerts.some((item) => String(item.title || "").includes("Search Console sync is not configured")));
+});
+
+test("monitoring summary shows search console backoff after failed automated sync", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const previousFetch = global.fetch;
+  const previousEnv = {
+    SEARCH_CONSOLE_SITE_URL: process.env.SEARCH_CONSOLE_SITE_URL,
+    SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL: process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL,
+    SEARCH_CONSOLE_PRIVATE_KEY: process.env.SEARCH_CONSOLE_PRIVATE_KEY,
+    SEARCH_CONSOLE_SYNC_ENABLED: process.env.SEARCH_CONSOLE_SYNC_ENABLED,
+  };
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  process.env.SEARCH_CONSOLE_SITE_URL = "https://example.com/";
+  process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL = "seo-sync@example.iam.gserviceaccount.com";
+  process.env.SEARCH_CONSOLE_PRIVATE_KEY = privateKey.export({ format: "pem", type: "pkcs8" }).toString("utf8");
+  process.env.SEARCH_CONSOLE_SYNC_ENABLED = "true";
+  global.fetch = async (url) => {
+    if (String(url).includes("oauth2.googleapis.com/token")) {
+      return {
+        ok: true,
+        json: async () => ({ access_token: "gsc-token" }),
+      };
+    }
+    if (String(url).includes("searchconsole.googleapis.com")) {
+      return {
+        ok: false,
+        status: 500,
+        text: async () => "temporary upstream error",
+      };
+    }
+    return { ok: true, status: 200, statusText: "OK" };
+  };
+  t.after(() => {
+    global.fetch = previousFetch;
+    process.env.SEARCH_CONSOLE_SITE_URL = previousEnv.SEARCH_CONSOLE_SITE_URL;
+    process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL = previousEnv.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL;
+    process.env.SEARCH_CONSOLE_PRIVATE_KEY = previousEnv.SEARCH_CONSOLE_PRIVATE_KEY;
+    process.env.SEARCH_CONSOLE_SYNC_ENABLED = previousEnv.SEARCH_CONSOLE_SYNC_ENABLED;
+  });
+
+  const { syncSeoMetricsFromSearchConsole } = require(path.join(repoRoot, "src/ops/seo-search-console-sync.js"));
+  const { buildMonitoringSummary } = require(path.join(repoRoot, "src/ops/monitoring.js"));
+
+  await assert.rejects(() => syncSeoMetricsFromSearchConsole({ actor: "tester:auto", automated: true }), /Search Console API 500/);
+  const summary = await buildMonitoringSummary({});
+  assert.equal(summary.runtime.seoSync.lastRunStatus, "failure");
+  assert.equal(summary.runtime.seoSync.health, "warning");
+  assert.equal(summary.runtime.seoSync.lastErrorCategory, "upstream");
+  assert.equal(summary.runtime.seoSync.lastErrorCode, "api_500");
+  assert.equal(summary.runtime.seoSync.lastErrorRetryable, true);
+  assert.match(summary.runtime.seoSync.recoveryHint, /retry later|Wait for backoff/i);
+  assert.equal(summary.seoRuntimeJudgment.health, "warning");
+  assert.ok(["sync", "combined"].includes(summary.seoRuntimeJudgment.focusArea));
+  assert.ok(
+    /retry later|backoff/i.test(summary.seoRuntimeJudgment.actionHint) ||
+      /Search Console sync health and freshness/i.test(summary.seoRuntimeJudgment.actionHint),
+  );
+  assert.ok(Array.isArray(summary.runtime.seoSync.recentRuns));
+  assert.ok(summary.runtime.seoSync.recentRuns.length >= 1);
+  assert.ok(summary.alerts.some((item) => String(item.title || "").includes("Search Console sync is backing off")));
+});
+
+test("search console sync health becomes degraded after repeated failures", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { recordSeoSyncRun, getSeoSyncStatus } = require(path.join(repoRoot, "src/ops/store.js"));
+  const { summarizeSeoSearchConsoleHealth } = require(path.join(repoRoot, "src/ops/seo-search-console-sync.js"));
+
+  recordSeoSyncRun({ status: "failure", actor: "tester:health", error: "first failure", nextAllowedRunAt: "2026-07-12T10:00:00.000Z", backoffMinutes: 15 });
+  recordSeoSyncRun({ status: "failure", actor: "tester:health", error: "second failure", nextAllowedRunAt: "2026-07-12T10:15:00.000Z", backoffMinutes: 30 });
+  recordSeoSyncRun({ status: "failure", actor: "tester:health", error: "third failure", nextAllowedRunAt: "2026-07-12T10:45:00.000Z", backoffMinutes: 60 });
+
+  const health = summarizeSeoSearchConsoleHealth({
+    config: {
+      enabled: true,
+      configured: true,
+      missing: [],
+    },
+    status: getSeoSyncStatus(),
+  });
+  assert.equal(health.health, "degraded");
+  assert.equal(health.label, "degraded");
+  assert.match(health.detail, /3 consecutive failure/);
+});
+
+test("search console sync error classifier distinguishes permissions and quota failures", () => {
+  const { classifySearchConsoleSyncError } = require(path.join(repoRoot, "src/ops/seo-search-console-sync.js"));
+
+  const permissions = classifySearchConsoleSyncError(new Error("Search Console API 403: permission denied"));
+  assert.equal(permissions.category, "permissions");
+  assert.equal(permissions.code, "api_403");
+  assert.equal(permissions.retryable, false);
+
+  const quota = classifySearchConsoleSyncError(new Error("Search Console API 429: rate limited"));
+  assert.equal(quota.category, "quota");
+  assert.equal(quota.code, "api_429");
+  assert.equal(quota.retryable, true);
+});
+
+test("seo runtime judgment becomes degraded after repeated sync failures", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const previousEnv = {
+    SEARCH_CONSOLE_SYNC_ENABLED: process.env.SEARCH_CONSOLE_SYNC_ENABLED,
+    SEARCH_CONSOLE_SITE_URL: process.env.SEARCH_CONSOLE_SITE_URL,
+    SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL: process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL,
+    SEARCH_CONSOLE_PRIVATE_KEY: process.env.SEARCH_CONSOLE_PRIVATE_KEY,
+  };
+  process.env.SEARCH_CONSOLE_SYNC_ENABLED = "true";
+  process.env.SEARCH_CONSOLE_SITE_URL = "https://example.com/";
+  process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL = "seo-sync@example.iam.gserviceaccount.com";
+  process.env.SEARCH_CONSOLE_PRIVATE_KEY = "dummy-private-key";
+  t.after(() => {
+    process.env.SEARCH_CONSOLE_SYNC_ENABLED = previousEnv.SEARCH_CONSOLE_SYNC_ENABLED;
+    process.env.SEARCH_CONSOLE_SITE_URL = previousEnv.SEARCH_CONSOLE_SITE_URL;
+    process.env.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL = previousEnv.SEARCH_CONSOLE_SERVICE_ACCOUNT_EMAIL;
+    process.env.SEARCH_CONSOLE_PRIVATE_KEY = previousEnv.SEARCH_CONSOLE_PRIVATE_KEY;
+  });
+  const { recordSeoSyncRun } = require(path.join(repoRoot, "src/ops/store.js"));
+  const { buildMonitoringSummary } = require(path.join(repoRoot, "src/ops/monitoring.js"));
+
+  recordSeoSyncRun({ status: "failure", actor: "tester:runtime", error: "first failure", nextAllowedRunAt: "2026-07-12T10:00:00.000Z", backoffMinutes: 15 });
+  recordSeoSyncRun({ status: "failure", actor: "tester:runtime", error: "second failure", nextAllowedRunAt: "2026-07-12T10:15:00.000Z", backoffMinutes: 30 });
+  recordSeoSyncRun({ status: "failure", actor: "tester:runtime", error: "third failure", nextAllowedRunAt: "2026-07-12T10:45:00.000Z", backoffMinutes: 60 });
+
+  const summary = await buildMonitoringSummary({});
+  assert.equal(summary.runtime.seoSync.health, "degraded");
+  assert.equal(summary.seoRuntimeJudgment.health, "degraded");
+  assert.equal(summary.seoRuntimeJudgment.focusArea, "sync");
+  assert.match(summary.seoRuntimeJudgment.detail, /3 consecutive failure/);
+});
+
+test("seo sync history summary exposes status counts and latest success-failure comparison", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { recordSeoSyncRun } = require(path.join(repoRoot, "src/ops/store.js"));
+  const { buildMonitoringSummary } = require(path.join(repoRoot, "src/ops/monitoring.js"));
+
+  recordSeoSyncRun({
+    status: "success",
+    actor: "tester:history",
+    fetchedRows: 8,
+    ingestedRows: 8,
+    request: { siteUrl: "https://example.com/", startDate: "2026-07-08", endDate: "2026-07-08" },
+  });
+  recordSeoSyncRun({
+    status: "failure",
+    actor: "tester:history",
+    error: "Search Console API 500: temporary upstream error",
+    errorCategory: "upstream",
+    errorCode: "api_500",
+    errorRetryable: true,
+    recoveryHint: "Wait for backoff or retry later.",
+    nextAllowedRunAt: "2026-07-12T10:00:00.000Z",
+    backoffMinutes: 15,
+  });
+  recordSeoSyncRun({
+    status: "skipped",
+    actor: "tester:history",
+    reason: "backoff_active",
+  });
+
+  const summary = await buildMonitoringSummary({});
+  assert.equal(summary.seoSyncHistory.totalRunsTracked, 3);
+  assert.equal(summary.seoSyncHistory.statusCounts.success, 1);
+  assert.equal(summary.seoSyncHistory.statusCounts.failure, 1);
+  assert.equal(summary.seoSyncHistory.statusCounts.skipped, 1);
+  assert.equal(summary.seoSyncHistory.latestSuccessRun?.status, "success");
+  assert.equal(summary.seoSyncHistory.latestFailureRun?.errorCategory, "upstream");
+  assert.equal(summary.seoSyncHistory.latestSkippedRun?.reason, "backoff_active");
+  assert.equal(summary.seoSyncHistory.firstFailureInCurrentStreak?.status, "failure");
+  assert.equal(summary.seoSyncHistory.comparison?.latestFailure?.code, "api_500");
+  assert.equal(summary.seoSyncHistory.comparison?.latestSuccessRows?.ingested, 8);
+});
+
+test("seo sync control audit links manual action to the next recorded sync run", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { createEvent, recordSeoSyncRun } = require(path.join(repoRoot, "src/ops/store.js"));
+  const { buildMonitoringSummary } = require(path.join(repoRoot, "src/ops/monitoring.js"));
+
+  createEvent({
+    actor: "tester:ops",
+    action: "seo_metrics_sync_search_console_retry_now",
+    note: "triggered Search Console sync manual retry",
+  });
+  recordSeoSyncRun({
+    status: "success",
+    actor: "tester:ops",
+    fetchedRows: 11,
+    ingestedRows: 9,
+    request: { siteUrl: "https://example.com/", startDate: "2026-07-08", endDate: "2026-07-08" },
+  });
+
+  const summary = await buildMonitoringSummary({});
+  assert.equal(summary.seoSyncControlAudit.totalActionsTracked, 1);
+  assert.equal(summary.seoSyncControlAudit.actionCounts.retry_now, 1);
+  assert.equal(summary.seoSyncControlAudit.latestAction?.action, "retry_now");
+  assert.equal(summary.seoSyncControlAudit.latestAction?.assessment?.status, "recovered");
+  assert.equal(summary.seoSyncControlAudit.latestAction?.nextRun?.status, "success");
+  assert.equal(summary.seoSyncControlAudit.latestAction?.nextRun?.ingestedRows, 9);
+  assert.equal(summary.seoSyncRecoveryReview.status, "recovered");
+  assert.equal(summary.seoSyncRecoveryReview.latestAction?.action, "retry_now");
+});
+
+test("seo sync recovery review reports still failing when manual retry is followed by failure", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { createEvent, recordSeoSyncRun } = require(path.join(repoRoot, "src/ops/store.js"));
+  const { buildMonitoringSummary } = require(path.join(repoRoot, "src/ops/monitoring.js"));
+
+  createEvent({
+    actor: "tester:ops",
+    action: "seo_metrics_sync_search_console_retry_now",
+    note: "triggered Search Console sync manual retry",
+  });
+  recordSeoSyncRun({
+    status: "failure",
+    actor: "tester:ops",
+    error: "Search Console API 500: temporary upstream error",
+    errorCategory: "upstream",
+    errorCode: "api_500",
+    errorRetryable: true,
+    recoveryHint: "Wait for backoff or retry later.",
+  });
+
+  const summary = await buildMonitoringSummary({});
+  assert.equal(summary.seoSyncControlAudit.latestAction?.assessment?.status, "still_failing");
+  assert.equal(summary.seoSyncRecoveryReview.status, "still_failing");
+  assert.equal(summary.seoSyncRecoveryReview.latestAction?.nextRun?.status, "failure");
+});
+
+test("monitoring summary exposes seo import diagnostics for unmapped pages", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { importSeoMetricsFromSearchConsole } = require(path.join(repoRoot, "src/ops/store.js"));
+  const { buildMonitoringSummary } = require(path.join(repoRoot, "src/ops/monitoring.js"));
+  const previousFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, status: 200, statusText: "OK" });
+  t.after(() => {
+    global.fetch = previousFetch;
+  });
+
+  importSeoMetricsFromSearchConsole({
+    actor: "ops:test",
+    importDate: new Date().toISOString().slice(0, 10),
+    csvText: [
+      "page,clicks,impressions,ctr,position",
+      "/product/kokocang-x,12,340,3.5%,4.2",
+      "/unknown/path,4,80,5%,8.5",
+    ].join("\n"),
+  });
+
+  const summary = await buildMonitoringSummary({});
+  assert.equal(summary.seoImportDiagnostics?.latestRun?.parsedRows, 2);
+  assert.equal(summary.seoImportDiagnostics?.latestRun?.unmappedPages?.length, 1);
+  assert.equal(summary.seoImportDiagnostics?.recentUnmappedPages?.[0]?.pagePath, "/unknown/path");
+  assert.equal(summary.seoImportDiagnostics?.recentUnmappedPages?.[0]?.suggestion, null);
+  assert.ok(summary.alerts.some((item) => String(item.title || "").includes("SEO import has unmapped pages")));
+});
+
+test("seo import diagnostics suggests target registration for canonical paths", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { importSeoMetricsFromSearchConsole } = require(path.join(repoRoot, "src/ops/store.js"));
+  const { buildMonitoringSummary } = require(path.join(repoRoot, "src/ops/monitoring.js"));
+  const previousFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, status: 200, statusText: "OK" });
+  t.after(() => {
+    global.fetch = previousFetch;
+  });
+
+  importSeoMetricsFromSearchConsole({
+    actor: "ops:test",
+    importDate: new Date().toISOString().slice(0, 10),
+    csvText: ["page,clicks,impressions,ctr,position", "/product/new-product,2,100,2%,9.1"].join("\n"),
+  });
+
+  const summary = await buildMonitoringSummary({});
+  const item = summary.seoImportDiagnostics?.recentUnmappedPages?.find((r) => r.pagePath === "/product/new-product") ?? null;
+  assert.ok(item);
+  assert.equal(item.suggestion?.targetType, "product");
+  assert.equal(item.suggestion?.targetId, "new-product");
+  assert.equal(item.suggestion?.confidence, "high");
 });
 
 test("monitoring summary includes payment result signals and deduplicates by order id", async (t) => {
@@ -622,6 +1450,16 @@ test("monitoring summary includes payment result signals and deduplicates by ord
   assert.equal(paymentProposal.targetType, "journey");
   assert.equal(paymentProposal.targetId, "payment_failed");
   assert.equal(paymentProposal.linkedRecommendationId, paymentRec.id);
+  assert.ok(summary.resultGovernanceRuntimeJudgment);
+  assert.ok(["healthy", "warning", "degraded"].includes(summary.resultGovernanceRuntimeJudgment.health));
+  assert.ok(summary.resultGovernanceLaneSummary);
+  assert.ok(Array.isArray(summary.resultGovernanceLaneSummary.lanes));
+  assert.ok(summary.resultGovernanceLaneSummary.lanes.some((lane) => lane.key === "payment"));
+  assert.ok(summary.resultGovernanceLaneSummary.lanes.some((lane) => lane.key === "fulfillment"));
+  assert.ok(summary.resultGovernanceLaneSummary.lanes.some((lane) => lane.key === "refund"));
+  const paymentLane = summary.resultGovernanceLaneSummary.lanes.find((lane) => lane.key === "payment");
+  assert.ok(paymentLane?.actionPath);
+  assert.ok(paymentLane?.actionLabel);
 });
 
 test("monitoring summary includes fulfillment result signals", async (t) => {
@@ -712,6 +1550,367 @@ test("monitoring summary creates fulfillment backlog recommendation when process
   assert.equal(fulfillmentProposal.targetType, "journey");
   assert.equal(fulfillmentProposal.targetId, "fulfillment_processing");
   assert.equal(fulfillmentProposal.linkedRecommendationId, fulfillmentRec.id);
+});
+
+test("result governance domain snapshot exposes payment and fulfillment candidates", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { trackEvent } = require(path.join(repoRoot, "src/signals/store.js"));
+  const { createResultGovernanceDomain } = require(path.join(repoRoot, "src/ops/result-governance-domain.js"));
+
+  const at = new Date().toISOString();
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_pay_domain_1",
+    contentRef: "prod-pay-domain-1",
+    eventType: "payment_failed",
+    source: "payment_webhook",
+    dedupeKey: "rgd:payment_failed:1",
+    metadata: { orderId: "order-rgd-1", paymentIssueReason: "declined" },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_pay_domain_2",
+    eventType: "payment_canceled",
+    source: "payment_webhook",
+    dedupeKey: "rgd:payment_canceled:1",
+    metadata: { orderId: "order-rgd-2", paymentIssueReason: "customer_abandon" },
+  });
+  ["order-rgd-3", "order-rgd-4", "order-rgd-5"].forEach((orderId, index) => {
+    trackEvent({
+      at,
+      targetType: "product",
+      targetId: `prod_ful_domain_${index + 1}`,
+      contentRef: `prod-ful-domain-${index + 1}`,
+      eventType: "fulfillment_processing",
+      source: "medusa_webhook",
+      dedupeKey: `rgd:fulfillment_processing:${index + 1}`,
+      metadata: { orderId, fulfillmentStatus: "processing" },
+    });
+  });
+
+  const domain = createResultGovernanceDomain();
+  const snapshot = domain.getResultGovernanceMonitoringSnapshot({
+    trackedEvents: require(path.join(repoRoot, "src/signals/store.js")).listTrackedEvents({ sinceHours: 24 }),
+  });
+
+  assert.equal(snapshot.paymentResults24h.failed, 1);
+  assert.equal(snapshot.paymentResults24h.canceled, 1);
+  assert.ok(snapshot.resultGovernanceRecommendationCandidates?.paymentIssues?.some((item) => item.issueKey === "payment_failed"));
+  assert.equal(snapshot.fulfillmentResults24h.processing, 3);
+  assert.ok(snapshot.resultGovernanceRecommendationCandidates?.fulfillmentBacklog?.some((item) => item.stageKey === "fulfillment_processing"));
+  assert.ok(snapshot.resultGovernanceAlerts?.some((item) => item.title.includes("Fulfillment appears to be stalled")));
+});
+
+test("result governance domain snapshot includes refund backlog summary and alert", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { trackEvent } = require(path.join(repoRoot, "src/signals/store.js"));
+  const { createResultGovernanceDomain } = require(path.join(repoRoot, "src/ops/result-governance-domain.js"));
+
+  const at = new Date().toISOString();
+  ["order-rgd-r1", "order-rgd-r2", "order-rgd-r3"].forEach((orderId, index) => {
+    trackEvent({
+      at,
+      targetType: "product",
+      targetId: `prod_ref_domain_${index + 1}`,
+      contentRef: `prod-ref-domain-${index + 1}`,
+      eventType: "refund_requested",
+      source: "medusa_webhook",
+      dedupeKey: `rgd:refund_requested:${index + 1}`,
+      metadata: { orderId },
+    });
+  });
+
+  const domain = createResultGovernanceDomain();
+  const snapshot = domain.getResultGovernanceMonitoringSnapshot({
+    trackedEvents: require(path.join(repoRoot, "src/signals/store.js")).listTrackedEvents({ sinceHours: 24 }),
+  });
+
+  assert.equal(snapshot.refundResults24h.requested, 3);
+  assert.equal(snapshot.refundResults24h.refunded, 0);
+  assert.equal(snapshot.refundResults24h.backlog, 3);
+  assert.equal(snapshot.refundResults24h.topTargets.refund_requested[0]?.targetPath, "/products/prod-ref-domain-1");
+  assert.ok(snapshot.resultGovernanceAlerts?.some((item) => item.title.includes("Refund backlog is accumulating")));
+});
+
+test("result governance proposal snapshot exposes payment and fulfillment proposal candidates", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const {
+    trackEvent,
+    listRecommendations,
+    listRuleTuningProposals,
+    createPaymentIssueRecommendation,
+    createFulfillmentBacklogRecommendation,
+  } = require(path.join(repoRoot, "src/signals/store.js"));
+  const { createResultGovernanceDomain } = require(path.join(repoRoot, "src/ops/result-governance-domain.js"));
+
+  const at = new Date().toISOString();
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_pay_prop",
+    contentRef: "prod-pay-prop",
+    eventType: "payment_failed",
+    source: "payment_webhook",
+    dedupeKey: "rgps:payment_failed:1",
+    metadata: { orderId: "order-rgps-1", paymentIssueReason: "declined" },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_pay_prop_2",
+    eventType: "payment_canceled",
+    source: "payment_webhook",
+    dedupeKey: "rgps:payment_canceled:1",
+    metadata: { orderId: "order-rgps-2", paymentIssueReason: "customer_abandon" },
+  });
+  ["order-rgps-3", "order-rgps-4", "order-rgps-5"].forEach((orderId, index) => {
+    trackEvent({
+      at,
+      targetType: "product",
+      targetId: `prod_ful_prop_${index + 1}`,
+      contentRef: `prod-ful-prop-${index + 1}`,
+      eventType: "fulfillment_processing",
+      source: "medusa_webhook",
+      dedupeKey: `rgps:fulfillment_processing:${index + 1}`,
+      metadata: { orderId, fulfillmentStatus: "processing" },
+    });
+  });
+
+  createPaymentIssueRecommendation({
+    issueKey: "payment_failed",
+    affectedOrders: 1,
+    issueRate: 1,
+    paidCount: 0,
+    authorizedCount: 0,
+    requiresActionCount: 0,
+    failedCount: 1,
+    canceledCount: 1,
+    dominantReason: { reason: "declined", label: "declined", affectedOrders: 1 },
+    targetBreakdown: [{ targetType: "product", targetId: "prod_pay_prop", targetPath: "/products/prod-pay-prop", affectedOrders: 1 }],
+    weakestPath: { targetType: "product", targetId: "prod_pay_prop", targetPath: "/products/prod-pay-prop", affectedOrders: 1 },
+  });
+  createFulfillmentBacklogRecommendation({
+    stageKey: "fulfillment_processing",
+    affectedOrders: 3,
+    shippedCount: 0,
+    deliveredCount: 0,
+    targetBreakdown: [{ targetType: "product", targetId: "prod_ful_prop_1", targetPath: "/products/prod-ful-prop-1", affectedOrders: 1 }],
+    weakestPath: { targetType: "product", targetId: "prod_ful_prop_1", targetPath: "/products/prod-ful-prop-1", affectedOrders: 1 },
+  });
+
+  const domain = createResultGovernanceDomain({
+    listRecommendations,
+    listRuleTuningProposals,
+  });
+  const snapshot = domain.getResultGovernanceProposalSnapshot();
+  assert.ok(snapshot.paymentProposalCandidates?.some((item) => item.anomalyKind === "payment_result_issue" && item.targetId === "payment_failed"));
+  assert.ok(snapshot.fulfillmentProposalCandidates?.some((item) => item.anomalyKind === "fulfillment_backlog" && item.targetId === "fulfillment_processing"));
+});
+
+test("result governance workflow snapshot unifies payment and fulfillment proposal-observation lanes", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const {
+    trackEvent,
+    listRecommendations,
+    listRuleTuningProposals,
+    createPaymentIssueRecommendation,
+    createFulfillmentBacklogRecommendation,
+  } = require(path.join(repoRoot, "src/signals/store.js"));
+  const { createResultGovernanceDomain } = require(path.join(repoRoot, "src/ops/result-governance-domain.js"));
+
+  const at = new Date().toISOString();
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_rg_workflow_pay",
+    contentRef: "prod-rg-workflow-pay",
+    eventType: "payment_failed",
+    source: "medusa_webhook",
+    dedupeKey: "rg-workflow:pay-failed",
+    metadata: { orderId: "rg-workflow-pay-1", paymentIssueReason: "provider_error" },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_rg_workflow_ful",
+    contentRef: "prod-rg-workflow-ful",
+    eventType: "fulfillment_processing",
+    source: "medusa_webhook",
+    dedupeKey: "rg-workflow:ful-1",
+    metadata: { orderId: "rg-workflow-ful-1", fulfillmentStatus: "processing" },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_rg_workflow_ful",
+    contentRef: "prod-rg-workflow-ful",
+    eventType: "fulfillment_processing",
+    source: "medusa_webhook",
+    dedupeKey: "rg-workflow:ful-2",
+    metadata: { orderId: "rg-workflow-ful-2", fulfillmentStatus: "processing" },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_rg_workflow_ful",
+    contentRef: "prod-rg-workflow-ful",
+    eventType: "fulfillment_processing",
+    source: "medusa_webhook",
+    dedupeKey: "rg-workflow:ful-3",
+    metadata: { orderId: "rg-workflow-ful-3", fulfillmentStatus: "processing" },
+  });
+
+  createPaymentIssueRecommendation({
+    targetId: "payment_failed",
+    issueKey: "payment_failed",
+    affectedOrders: 1,
+    issueRate: 1,
+    paidCount: 0,
+    authorizedCount: 0,
+    failedCount: 1,
+    canceledCount: 0,
+    requiresActionCount: 0,
+    targetBreakdown: [{ targetType: "product", targetId: "prod_rg_workflow_pay", targetPath: "/products/prod-rg-workflow-pay", affectedOrders: 1 }],
+    weakestPath: { targetType: "product", targetId: "prod_rg_workflow_pay", targetPath: "/products/prod-rg-workflow-pay", affectedOrders: 1 },
+    dominantReason: { reason: "provider_error", label: "provider error", affectedOrders: 1 },
+  });
+  createFulfillmentBacklogRecommendation({
+    targetId: "fulfillment_processing",
+    stageKey: "fulfillment_processing",
+    affectedOrders: 3,
+    shippedCount: 0,
+    deliveredCount: 0,
+    targetBreakdown: [{ targetType: "product", targetId: "prod_rg_workflow_ful", targetPath: "/products/prod-rg-workflow-ful", affectedOrders: 3 }],
+    weakestPath: { targetType: "product", targetId: "prod_rg_workflow_ful", targetPath: "/products/prod-rg-workflow-ful", affectedOrders: 3 },
+  });
+
+  const domain = createResultGovernanceDomain({
+    listRecommendations,
+    listRuleTuningProposals,
+  });
+  const snapshot = domain.getResultGovernanceWorkflowSnapshot();
+  assert.ok(Array.isArray(snapshot.lanes.payment.proposalCandidates));
+  assert.ok(Array.isArray(snapshot.lanes.fulfillment.proposalCandidates));
+  assert.ok(Array.isArray(snapshot.lanes.refund.proposalCandidates));
+  assert.ok(snapshot.proposalCandidates.payment.some((item) => item.anomalyKind === "payment_result_issue"));
+  assert.ok(snapshot.proposalCandidates.fulfillment.some((item) => item.anomalyKind === "fulfillment_backlog"));
+  assert.equal(snapshot.observationFollowupCandidates.refund.length, 0);
+});
+
+test("resultGovernanceOps facade exposes monitoring and proposal snapshot contract", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const {
+    trackEvent,
+    createPaymentIssueRecommendation,
+    createFulfillmentBacklogRecommendation,
+  } = require(path.join(repoRoot, "src/signals/store.js"));
+  const { resultGovernanceOps } = require(path.join(repoRoot, "src/ops/store.js"));
+
+  const at = new Date().toISOString();
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_result_ops_pay",
+    contentRef: "prod-result-ops-pay",
+    eventType: "payment_failed",
+    source: "medusa_webhook",
+    dedupeKey: "result-ops:pay-failed",
+    metadata: { orderId: "result-ops-pay-1", paymentIssueReason: "provider_error" },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_result_ops_ful",
+    contentRef: "prod-result-ops-ful",
+    eventType: "fulfillment_processing",
+    source: "medusa_webhook",
+    dedupeKey: "result-ops:ful-1",
+    metadata: { orderId: "result-ops-ful-1", fulfillmentStatus: "processing" },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_result_ops_ful",
+    contentRef: "prod-result-ops-ful",
+    eventType: "fulfillment_processing",
+    source: "medusa_webhook",
+    dedupeKey: "result-ops:ful-2",
+    metadata: { orderId: "result-ops-ful-2", fulfillmentStatus: "processing" },
+  });
+  trackEvent({
+    at,
+    targetType: "product",
+    targetId: "prod_result_ops_ful",
+    contentRef: "prod-result-ops-ful",
+    eventType: "fulfillment_processing",
+    source: "medusa_webhook",
+    dedupeKey: "result-ops:ful-3",
+    metadata: { orderId: "result-ops-ful-3", fulfillmentStatus: "processing" },
+  });
+
+  createPaymentIssueRecommendation({
+    targetId: "payment_failed",
+    issueKey: "payment_failed",
+    affectedOrders: 1,
+    issueRate: 1,
+    paidCount: 0,
+    authorizedCount: 0,
+    failedCount: 1,
+    canceledCount: 0,
+    requiresActionCount: 0,
+    targetBreakdown: [{ targetType: "product", targetId: "prod_result_ops_pay", targetPath: "/products/prod-result-ops-pay", affectedOrders: 1 }],
+    weakestPath: { targetType: "product", targetId: "prod_result_ops_pay", targetPath: "/products/prod-result-ops-pay", affectedOrders: 1 },
+    dominantReason: { reason: "provider_error", label: "provider error", affectedOrders: 1 },
+  });
+  createFulfillmentBacklogRecommendation({
+    targetId: "fulfillment_processing",
+    stageKey: "fulfillment_processing",
+    affectedOrders: 3,
+    shippedCount: 0,
+    deliveredCount: 0,
+    targetBreakdown: [{ targetType: "product", targetId: "prod_result_ops_ful", targetPath: "/products/prod-result-ops-ful", affectedOrders: 3 }],
+    weakestPath: { targetType: "product", targetId: "prod_result_ops_ful", targetPath: "/products/prod-result-ops-ful", affectedOrders: 3 },
+  });
+
+  const monitoringSnapshot = resultGovernanceOps.getResultGovernanceMonitoringSnapshot({
+    trackedEvents: require(path.join(repoRoot, "src/signals/store.js")).listTrackedEvents({ sinceHours: 24 }),
+  });
+  assert.equal(monitoringSnapshot.paymentResults24h.failed, 1);
+  assert.equal(monitoringSnapshot.fulfillmentResults24h.processing, 3);
+  assert.ok(Array.isArray(monitoringSnapshot.resultGovernanceAlerts));
+
+  const proposalSnapshot = resultGovernanceOps.getResultGovernanceProposalSnapshot();
+  assert.ok(Array.isArray(proposalSnapshot.paymentRecommendations));
+  assert.ok(Array.isArray(proposalSnapshot.fulfillmentProposalCandidates));
+
+  const workflowSnapshot = resultGovernanceOps.getResultGovernanceWorkflowSnapshot();
+  assert.ok(Array.isArray(workflowSnapshot.lanes.payment.proposalCandidates));
+  assert.ok(Array.isArray(workflowSnapshot.proposalCandidates.fulfillment));
+});
+
+test("resultGovernanceOps contract metadata matches compat exports", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const store = require(path.join(repoRoot, "src/ops/store.js"));
+
+  assert.equal(store.resultGovernanceOpsContract?.entry, "resultGovernanceOps");
+  assert.ok(Array.isArray(store.resultGovernanceOpsContract?.methods));
+  assert.ok(Array.isArray(store.resultGovernanceOpsContract?.compatExports));
+
+  store.resultGovernanceOpsContract.methods.forEach((name) => {
+    assert.equal(typeof store.resultGovernanceOps[name], "function");
+  });
+
+  store.resultGovernanceOpsContract.compatExports.forEach((name) => {
+    assert.equal(store[name], store.resultGovernanceOps[name]);
+  });
 });
 
 test("fulfillment backlog proposal exposes post-apply observation after follow-up is applied", async (t) => {
@@ -1603,6 +2802,121 @@ test("monitoring summary groups commerce funnel by attribution source and flags 
   assert.equal(commerceProposal.targetType, "journey");
   assert.equal(commerceProposal.targetId, "guide");
   assert.equal(commerceProposal.linkedRecommendationId, commerceRec.id);
+  assert.ok(summary.commerceHealthSummary);
+  assert.ok(["healthy", "warning", "degraded"].includes(summary.commerceHealthSummary.health));
+  assert.equal(summary.commerceHealthSummary.weakestSource, "guide");
+  assert.ok(summary.commerceRuntimeJudgment);
+  assert.ok(["healthy", "warning", "degraded"].includes(summary.commerceRuntimeJudgment.health));
+  assert.equal(summary.commerceRuntimeJudgment.focusArea, "guide");
+  assert.ok(summary.commerceSourceSummary);
+  assert.ok(Array.isArray(summary.commerceSourceSummary.sources));
+  assert.equal(summary.commerceSourceSummary.sources[0]?.source, "guide");
+  assert.ok(summary.commerceSourceSummary.sources[0]?.actionPath);
+  assert.ok(summary.governanceOverview);
+  assert.ok(["healthy", "warning", "degraded"].includes(summary.governanceOverview.health));
+  assert.ok(Array.isArray(summary.governanceOverview.lines));
+  assert.ok(summary.governanceOverview.lines.some((line) => line.key === "seo"));
+  assert.ok(summary.governanceOverview.lines.some((line) => line.key === "result_governance"));
+  assert.ok(summary.governanceOverview.lines.some((line) => line.key === "commerce"));
+  assert.ok(summary.growthLoopOverview);
+  assert.ok(["healthy", "warning", "degraded"].includes(summary.growthLoopOverview.health));
+  assert.ok(Array.isArray(summary.growthLoopOverview.lines));
+  assert.ok(summary.growthLoopOverview.lines.some((line) => line.key === "traffic"));
+  assert.ok(summary.growthLoopOverview.lines.some((line) => line.key === "conversion"));
+  assert.ok(summary.growthLoopOverview.lines.some((line) => line.key === "result"));
+  assert.ok(summary.growthExperimentOverview);
+  assert.ok(["healthy", "warning", "degraded"].includes(summary.growthExperimentOverview.health));
+  assert.ok(Array.isArray(summary.growthExperimentOverview.groups));
+  assert.ok(Array.isArray(summary.growthExperimentOverview.items));
+  assert.ok(summary.growthExperimentOverview.items.every((item) => Array.isArray(item.effectMetrics)));
+  assert.ok(summary.todaysBestBet);
+  assert.ok(["healthy", "warning", "degraded"].includes(summary.todaysBestBet.health));
+  assert.ok(["governance", "growth_loop", "geo", "experiment"].includes(summary.todaysBestBet.source));
+  assert.ok(summary.todaysBestBet.actionPath);
+  assert.ok(summary.todaysBestBet.targetType);
+  assert.ok("targetId" in summary.todaysBestBet);
+  assert.ok(summary.todaysBestBet.targetLabel);
+  assert.ok(["manual_only", "auto_draft", "auto_proposal_candidate"].includes(summary.todaysBestBet.automationEligibility));
+  assert.ok(summary.todaysBestBet.automationReason);
+  assert.ok("automationArtifact" in summary.todaysBestBet);
+  assert.ok(["manual_review_only", "draft_missing", "draft_only", "review_after_draft", "candidate_ready"].includes(summary.todaysBestBet.promotionEligibility));
+  assert.ok(summary.todaysBestBet.promotionReason);
+  assert.ok(summary.todaysBestBet.promotionAction);
+  assert.ok(summary.todaysBestBet.promotionAction.actionPath);
+  assert.ok(summary.todaysBestBet.promotionAction.actionLabel);
+  assert.ok("mutation" in summary.todaysBestBet.promotionAction);
+  assert.ok(["pending", "executed", "observing", "succeeded", "returned_to_risk"].includes(summary.todaysBestBet.executionState));
+  assert.ok(summary.todaysBestBet.executionReason);
+  assert.ok(["not_started", "handoff_ready", "observing", "complete", "regressed"].includes(summary.todaysBestBet.observationStatus));
+  assert.ok(summary.todaysBestBet.observationWindow);
+  assert.ok(Array.isArray(summary.todaysBestBet.observationMetrics));
+  assert.ok(summary.todaysBestBet.observationMetrics.length >= 1);
+  assert.ok(summary.todaysBestBet.observationNextStep);
+  assert.ok("playbookRef" in summary.todaysBestBet);
+  assert.ok(
+    summary.todaysBestBet.playbookRef == null ||
+      summary.todaysBestBet.playbookRef.latestApplication == null ||
+      "nextAction" in summary.todaysBestBet.playbookRef.latestApplication,
+  );
+  assert.ok(
+    summary.todaysBestBet.promotionAction.mutation == null ||
+      ["proposal_transition", "repo_change_transition"].includes(summary.todaysBestBet.promotionAction.mutation.kind),
+  );
+  assert.ok(summary.decisionTimeline);
+  assert.ok(["risk_heavy", "decision_heavy", "execution_heavy", "steady"].includes(summary.decisionTimeline.trend));
+  assert.ok(Array.isArray(summary.decisionTimeline.items));
+  assert.ok(summary.dailySnapshotHistory);
+  assert.ok(Array.isArray(summary.dailySnapshotHistory.items));
+  assert.ok(summary.dailySnapshotHistory.items.length >= 1);
+  assert.ok(summary.weeklyOperatingReview);
+  assert.ok(["healthy", "warning", "degraded"].includes(summary.weeklyOperatingReview.health));
+  assert.ok(typeof summary.weeklyOperatingReview.summary === "string");
+  assert.ok(summary.weeklyOperatingReview.executionOutcomes);
+  assert.ok(typeof summary.weeklyOperatingReview.executionOutcomes.counts.executed === "number");
+  assert.ok(typeof summary.weeklyOperatingReview.executionOutcomes.counts.observing === "number");
+  assert.ok(typeof summary.weeklyOperatingReview.executionOutcomes.counts.succeeded === "number");
+  assert.ok(typeof summary.weeklyOperatingReview.executionOutcomes.counts.returned_to_risk === "number");
+  assert.ok(Array.isArray(summary.weeklyOperatingReview.executionOutcomes.items));
+  assert.ok(summary.weeklyOperatingReview.executionOutcomes.items.every((item) => ["pending", "executed", "observing", "succeeded", "returned_to_risk"].includes(item.executionState)));
+  assert.ok(summary.weeklyOperatingReview.executionOutcomes.items.every((item) => ["not_started", "handoff_ready", "observing", "complete", "regressed"].includes(item.observationStatus)));
+  assert.ok(summary.weeklyOperatingReview.outcomeAttribution);
+  assert.ok(summary.weeklyOperatingReview.outcomeAttribution.bySource);
+  assert.ok(typeof summary.weeklyOperatingReview.outcomeAttribution.bySource.governance.total === "number");
+  assert.ok(Array.isArray(summary.weeklyOperatingReview.outcomeAttribution.hints));
+  assert.ok(Array.isArray(summary.weeklyOperatingReview.playbookDrafts));
+  assert.ok(summary.weeklyOperatingReview.playbookDrafts.every((item) => item.id && item.actionPath));
+  assert.ok(summary.weeklyOperatingReview.playbookDrafts.every((item) => item.latestApplication == null || "nextAction" in item.latestApplication));
+  assert.ok(summary.weeklyOperatingReview.playbookApplicationOutcomes);
+  assert.ok(typeof summary.weeklyOperatingReview.playbookApplicationOutcomes.counts.draft === "number");
+  assert.ok(Array.isArray(summary.weeklyOperatingReview.playbookApplicationOutcomes.items));
+  assert.ok(Array.isArray(summary.weeklyOperatingReview.nextWeekBets));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.length >= 1);
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => "metricSummary" in item));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => item.targetType && "targetId" in item && item.targetLabel));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => ["manual_only", "auto_draft", "auto_proposal_candidate"].includes(item.automationEligibility)));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => item.automationReason));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => "automationArtifact" in item));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => ["manual_review_only", "draft_missing", "draft_only", "review_after_draft", "candidate_ready"].includes(item.promotionEligibility)));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => item.promotionReason));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => item.promotionAction && item.promotionAction.actionPath && item.promotionAction.actionLabel));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => "mutation" in item.promotionAction));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => ["pending", "executed", "observing", "succeeded", "returned_to_risk"].includes(item.executionState)));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => item.executionReason));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => ["not_started", "handoff_ready", "observing", "complete", "regressed"].includes(item.observationStatus)));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => item.observationWindow));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => Array.isArray(item.observationMetrics) && item.observationMetrics.length >= 1));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => item.observationNextStep));
+  assert.ok(summary.weeklyOperatingReview.nextWeekBets.every((item) => "playbookRef" in item));
+  assert.ok(
+    summary.weeklyOperatingReview.nextWeekBets.every(
+      (item) => item.playbookRef == null || item.playbookRef.latestApplication == null || "nextAction" in item.playbookRef.latestApplication,
+    ),
+  );
+  assert.ok(
+    summary.weeklyOperatingReview.nextWeekBets.every(
+      (item) => item.promotionAction.mutation == null || ["proposal_transition", "repo_change_transition"].includes(item.promotionAction.mutation.kind),
+    ),
+  );
 });
 
 test("commerce journey proposal exposes post-apply observation after incident follow-up is applied", async (t) => {
@@ -3890,6 +5204,215 @@ test("repo change transition enforces minimal state machine", (t) => {
   assert.equal(ciRunning?.status, "ci_running");
   assert.equal(ciRunning?.ciStatus, "in_progress");
   assert.equal(blocked?.status, "blocked");
+});
+
+test("seo target registry lookup reuses active repo change and ignores cancelled items", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { createRepoChange, transitionRepoChange, findSeoTargetRegistryRepoChange } = require(path.join(repoRoot, "src/ops/store.js"));
+
+  const cancelled = createRepoChange({
+    actor: "ops:test",
+    kind: "seo_target_registry",
+    title: "old target registration",
+    targetType: "product",
+    targetId: "new-product",
+    branchName: "ai/seo-target/product-new-product-old",
+  });
+  transitionRepoChange({ id: cancelled.id, actor: "ops:test", nextStatus: "cancelled", note: "superseded" });
+
+  const active = createRepoChange({
+    actor: "ops:test",
+    kind: "seo_target_registry",
+    title: "new target registration",
+    targetType: "product",
+    targetId: "new-product",
+    branchName: "ai/seo-target/product-new-product",
+  });
+
+  const found = findSeoTargetRegistryRepoChange({ targetType: "product", targetId: "new-product" });
+  assert.equal(found?.id, active.id);
+});
+
+test("seo import diagnostics includes matched target registry repo change status", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { importSeoMetricsFromSearchConsole, createRepoChange } = require(path.join(repoRoot, "src/ops/store.js"));
+  const { buildMonitoringSummary } = require(path.join(repoRoot, "src/ops/monitoring.js"));
+  const previousFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, status: 200, statusText: "OK" });
+  t.after(() => {
+    global.fetch = previousFetch;
+  });
+
+  createRepoChange({
+    actor: "ops:test",
+    kind: "seo_target_registry",
+    title: "register target",
+    targetType: "product",
+    targetId: "new-product",
+    branchName: "ai/seo-target/product-new-product",
+    status: "pr_opened",
+    prUrl: "https://github.com/starxlab0/aisite/pull/99",
+    prNumber: 99,
+  });
+
+  importSeoMetricsFromSearchConsole({
+    actor: "ops:test",
+    importDate: new Date().toISOString().slice(0, 10),
+    csvText: ["page,clicks,impressions,ctr,position", "/product/new-product,2,100,2%,9.1"].join("\n"),
+  });
+
+  const summary = await buildMonitoringSummary({});
+  const item = summary.seoImportDiagnostics?.recentUnmappedPages?.find((r) => r.pagePath === "/product/new-product") ?? null;
+  assert.equal(item?.repoChange?.status, "pr_opened");
+  assert.equal(item?.repoChange?.prNumber, 99);
+});
+
+test("merged seo target registry is hidden from active unmapped list and moved to resolved pending refresh", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { importSeoMetricsFromSearchConsole, createRepoChange } = require(path.join(repoRoot, "src/ops/store.js"));
+  const { buildMonitoringSummary } = require(path.join(repoRoot, "src/ops/monitoring.js"));
+  const previousFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, status: 200, statusText: "OK" });
+  t.after(() => {
+    global.fetch = previousFetch;
+  });
+
+  createRepoChange({
+    actor: "ops:test",
+    kind: "seo_target_registry",
+    title: "register target",
+    targetType: "product",
+    targetId: "new-product",
+    branchName: "ai/seo-target/product-new-product",
+    status: "merged",
+    prUrl: "https://github.com/starxlab0/aisite/pull/100",
+    prNumber: 100,
+  });
+
+  importSeoMetricsFromSearchConsole({
+    actor: "ops:test",
+    importDate: new Date().toISOString().slice(0, 10),
+    csvText: ["page,clicks,impressions,ctr,position", "/product/new-product,2,100,2%,9.1"].join("\n"),
+  });
+
+  const summary = await buildMonitoringSummary({});
+  const active = summary.seoImportDiagnostics?.recentUnmappedPages?.find((r) => r.pagePath === "/product/new-product") ?? null;
+  const resolved = summary.seoImportDiagnostics?.resolvedRecentUnmappedPages?.find((r) => r.pagePath === "/product/new-product") ?? null;
+  assert.equal(active, null);
+  assert.equal(resolved?.repoChange?.status, "merged");
+  assert.equal(summary.seoImportDiagnostics?.latestRun?.activeUnmappedPages, 0);
+  assert.equal(summary.seoImportDiagnostics?.latestRun?.resolvedUnmappedPages, 1);
+});
+
+test("replay latest seo import reports missing payload before any import", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { replayLatestSeoImport } = require(path.join(repoRoot, "src/ops/store.js"));
+  const result = replayLatestSeoImport({ actor: "ops:test" });
+  assert.equal(result.status, "missing_replay");
+});
+
+test("replay latest seo import remaps merged registry targets and clears pending refresh gap", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { importSeoMetricsFromSearchConsole, createRepoChange, replayLatestSeoImport } = require(path.join(repoRoot, "src/ops/store.js"));
+  const { buildMonitoringSummary } = require(path.join(repoRoot, "src/ops/monitoring.js"));
+  const previousFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, status: 200, statusText: "OK" });
+  t.after(() => {
+    global.fetch = previousFetch;
+  });
+
+  importSeoMetricsFromSearchConsole({
+    actor: "ops:test",
+    importDate: new Date().toISOString().slice(0, 10),
+    csvText: ["page,clicks,impressions,ctr,position", "/product/new-product,2,100,2%,9.1"].join("\n"),
+  });
+
+  createRepoChange({
+    actor: "ops:test",
+    kind: "seo_target_registry",
+    title: "register target",
+    targetType: "product",
+    targetId: "new-product",
+    branchName: "ai/seo-target/product-new-product",
+    registryTarget: {
+      targetType: "product",
+      targetId: "new-product",
+      title: "new-product",
+      targetPath: "/product/new-product",
+    },
+    status: "merged",
+    prUrl: "https://github.com/starxlab0/aisite/pull/101",
+    prNumber: 101,
+  });
+
+  const replay = replayLatestSeoImport({ actor: "ops:test" });
+  assert.equal(replay.status, "ok");
+  assert.equal(replay.unmappedPages?.length, 0);
+
+  const summary = await buildMonitoringSummary({});
+  const active = summary.seoImportDiagnostics?.recentUnmappedPages?.find((r) => r.pagePath === "/product/new-product") ?? null;
+  const resolved = summary.seoImportDiagnostics?.resolvedRecentUnmappedPages?.find((r) => r.pagePath === "/product/new-product") ?? null;
+  assert.equal(active, null);
+  assert.equal(resolved, null);
+  assert.equal(summary.seoImportDiagnostics?.latestRun?.activeUnmappedPages, 0);
+  assert.equal(summary.seoImportDiagnostics?.latestRun?.resolvedUnmappedPages, 0);
+});
+
+test("seoOps facade exposes import replay and monitoring snapshot contract", async (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const { seoOps } = require(path.join(repoRoot, "src/ops/store.js"));
+  const previousFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, status: 200, statusText: "OK" });
+  t.after(() => {
+    global.fetch = previousFetch;
+  });
+
+  const importDate = new Date().toISOString().slice(0, 10);
+  const imported = seoOps.importSeoMetricsFromSearchConsole({
+    actor: "ops:test",
+    importDate,
+    csvText: ["page,query,clicks,impressions,ctr,position", "/product/kokocang-x,best quiet keyboard,12,340,3.5%,4.2"].join("\n"),
+    source: "search_console",
+  });
+  assert.equal(imported.ingested, 1);
+
+  const metrics = seoOps.listSeoMetrics({ targetType: "product", targetId: "kokocang-x", sinceDays: 30, limit: 20 });
+  assert.equal(metrics.total, 1);
+
+  const snapshot = seoOps.getSeoMonitoringSnapshot({ warningDays: 3, criticalDays: 7, sinceDays: 14, limit: 100, windowDays: 7 });
+  assert.ok(snapshot.seoFreshness);
+  assert.ok(Array.isArray(snapshot.seoPerformance?.targets));
+  assert.ok(Array.isArray(snapshot.seoAlerts));
+  assert.ok(snapshot.seoPerformance.targets.some((item) => item.targetType === "product" && item.targetId === "kokocang-x"));
+
+  const replayed = seoOps.replayLatestSeoImport({ actor: "ops:test" });
+  assert.equal(replayed.status, "ok");
+  assert.ok(typeof replayed.replayedAt === "string" && replayed.replayedAt.length > 0);
+  assert.ok(replayed.ingested >= 0);
+});
+
+test("seoOps contract metadata matches compat exports", (t) => {
+  withTempEnv(t);
+  resetControlPlaneModules();
+  const store = require(path.join(repoRoot, "src/ops/store.js"));
+
+  assert.equal(store.seoOpsContract?.entry, "seoOps");
+  assert.ok(Array.isArray(store.seoOpsContract?.methods));
+  assert.ok(Array.isArray(store.seoOpsContract?.compatExports));
+
+  store.seoOpsContract.methods.forEach((name) => {
+    assert.equal(typeof store.seoOps[name], "function");
+  });
+
+  store.seoOpsContract.compatExports.forEach((name) => {
+    assert.equal(store[name], store.seoOps[name]);
+  });
 });
 
 test("github check normalization resolves queued and success states", (t) => {

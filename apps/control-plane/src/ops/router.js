@@ -18,6 +18,12 @@ const {
 const {
   createPreviewToken,
   createEvent,
+  createRepoChange,
+  listPlaybooks,
+  getPlaybook,
+  applyPlaybook,
+  transitionPlaybookApplication,
+  seoOps,
   getOpsDraft: getDraft,
   listEvents,
   listPreviewTokens,
@@ -80,6 +86,41 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
     return true;
   }
 
+  if (url.pathname === "/ops/events/feedback" && req.method === "POST") {
+    const auth = getOpsAuthContext(req);
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const body = (await readJsonBody(req)) ?? {};
+    const category = String(body.category || "").trim();
+    const mostBlockedStep = String(body.mostBlockedStep || "").trim();
+    const easiestToMisclick = String(body.easiestToMisclick || "").trim();
+    const mostUnclearNextStep = String(body.mostUnclearNextStep || "").trim();
+    const note = String(body.note || "").trim();
+    const page = String(body.page || "").trim();
+    if (!category || !mostBlockedStep || !easiestToMisclick || !mostUnclearNextStep) {
+      sendJson(res, 400, errorEnvelope("Feedback requires category, mostBlockedStep, easiestToMisclick, and mostUnclearNextStep", { cmsAdapter }));
+      return true;
+    }
+    const event = createEvent({
+      actor,
+      action: "trial_feedback",
+      note: [
+        `category=${category}`,
+        page ? `page=${page}` : null,
+        `blocked=${mostBlockedStep}`,
+        `misclick=${easiestToMisclick}`,
+        `unclear_next=${mostUnclearNextStep}`,
+        note ? `note=${note}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    });
+    sendJson(res, 200, okEnvelope({ event }, { cmsAdapter }));
+    return true;
+  }
+
   if (url.pathname === "/ops/targets" && req.method === "GET") {
     const type = url.searchParams.get("type") || undefined;
     const q = url.searchParams.get("q") || "";
@@ -104,6 +145,86 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
     const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit") || 10)));
     const items = listRepoChanges({ status, targetType, targetId }).slice(0, limit);
     sendJson(res, 200, okEnvelope({ items, total: items.length }, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname === "/ops/playbooks" && req.method === "GET") {
+    const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 20)));
+    const result = listPlaybooks({ limit });
+    sendJson(res, 200, okEnvelope(result, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname.startsWith("/ops/playbooks/") && req.method === "GET") {
+    const id = url.pathname.split("/").slice(-1)[0];
+    const playbook = getPlaybook(id);
+    if (!playbook) {
+      sendJson(res, 404, { service: "control-plane", status: "not_found", message: "Playbook not found" });
+      return true;
+    }
+    sendJson(res, 200, okEnvelope({ playbook }, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname.startsWith("/ops/playbooks/") && url.pathname.endsWith("/apply") && req.method === "POST") {
+    const auth = requireOpsCapability(req, "publish_content");
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const id = url.pathname.split("/").slice(-2)[0];
+    const body = (await readJsonBody(req)) ?? {};
+    const result = applyPlaybook({
+      id,
+      actor,
+      source: body.source,
+      targetType: body.targetType,
+      targetId: body.targetId,
+      targetLabel: body.targetLabel,
+      note: body.note,
+    });
+    if (!result) {
+      sendJson(res, 404, { service: "control-plane", status: "not_found", message: "Playbook not found" });
+      return true;
+    }
+    createEvent({
+      actor,
+      action: "playbook_apply",
+      target: result.application.targetType && result.application.targetId ? { type: result.application.targetType, id: result.application.targetId } : undefined,
+      note: `playbook ${id} applied to ${result.application.targetLabel || result.application.targetType}`,
+    });
+    sendJson(res, 200, okEnvelope(result, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname.includes("/ops/playbooks/") && url.pathname.includes("/applications/") && url.pathname.endsWith("/transition") && req.method === "POST") {
+    const auth = requireOpsCapability(req, "publish_content");
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const parts = url.pathname.split("/").filter(Boolean);
+    const playbookId = parts[parts.indexOf("playbooks") + 1];
+    const applicationId = parts[parts.indexOf("applications") + 1];
+    const body = (await readJsonBody(req)) ?? {};
+    const nextStatus = body.status;
+    const note = body.note;
+    const result = transitionPlaybookApplication({ playbookId, applicationId, actor, nextStatus, note });
+    if (!result) {
+      sendJson(res, 404, { service: "control-plane", status: "not_found", message: "Playbook application not found" });
+      return true;
+    }
+    if (result.blocked) {
+      sendJson(res, 409, { service: "control-plane", status: "blocked", message: result.message, cmsAdapter });
+      return true;
+    }
+    createEvent({
+      actor,
+      action: "playbook_application_transition",
+      target: result.application.targetType && result.application.targetId ? { type: result.application.targetType, id: result.application.targetId } : undefined,
+      note: `playbook application ${applicationId} -> ${nextStatus}${note ? ` · ${note}` : ""}`,
+    });
+    sendJson(res, 200, okEnvelope(result, { cmsAdapter }));
     return true;
   }
 
@@ -227,6 +348,97 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
       sendJson(res, 409, okEnvelope(result, { cmsAdapter }));
       return true;
     }
+    sendJson(res, 200, okEnvelope(result, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname === "/ops/seo-targets/register" && req.method === "POST") {
+    const auth = requireOpsCapability(req, "publish_content");
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const body = (await readJsonBody(req)) ?? {};
+    const targetType = String(body.targetType || "").trim();
+    const targetId = String(body.targetId || "").trim();
+    const targetPath = String(body.targetPath || body.pagePath || "").trim();
+    const title = String(body.title || targetId || "").trim() || targetId;
+
+    if (!["product", "collection", "guide"].includes(targetType) || !targetId || !targetPath) {
+      sendJson(res, 400, errorEnvelope("Invalid target registration payload.", { cmsAdapter }));
+      return true;
+    }
+
+    const existing = seoOps.findSeoTargetRegistryRepoChange({ targetType, targetId });
+    if (existing?.prUrl || existing?.prNumber || existing?.status === "merged") {
+      sendJson(
+        res,
+        200,
+        okEnvelope(
+          {
+            repoChange: existing,
+            result: {
+              status: "exists",
+              message:
+                existing.status === "merged"
+                  ? "SEO target is already registered through an existing merged repo change."
+                  : "Draft PR already exists for this SEO target registration.",
+            },
+          },
+          { cmsAdapter },
+        ),
+      );
+      return true;
+    }
+
+    if (existing) {
+      const reused = await createRepoChangePullRequest({ id: existing.id, actor });
+      sendJson(res, 200, okEnvelope(reused, { cmsAdapter }));
+      return true;
+    }
+
+    const branchName = `ai/seo-target/${targetType}-${targetId}`;
+    const change = createRepoChange({
+      kind: "seo_target_registry",
+      title: `Register SEO target ${targetType}:${targetId}`,
+      summary: `Register a new SEO target so Search Console imports can map ${targetPath} to ${targetType}:${targetId}.`,
+      trigger: "seo_import_unmapped",
+      branchName,
+      targetType,
+      targetId,
+      registryTarget: {
+        targetType,
+        targetId,
+        title,
+        targetPath,
+      },
+      prDraft: {
+        title: `chore(seo): register ${targetType}:${targetId}`,
+        checklist: ["确认 targetPath 与站点路由一致", "补齐必要字段（标题/摘要/模块）", "导入后检查 SEO freshness 与 top issues"],
+      },
+    });
+
+    const result = await createRepoChangePullRequest({ id: change.id, actor });
+    sendJson(res, 200, okEnvelope(result, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname === "/ops/seo-metrics/replay-latest" && req.method === "POST") {
+    const auth = requireOpsCapability(req, "manage_recommendations");
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const result = seoOps.replayLatestSeoImport({ actor });
+    if (result.status === "missing_replay") {
+      sendJson(res, 409, okEnvelope(result, { cmsAdapter }));
+      return true;
+    }
+    createEvent({
+      actor,
+      action: "seo_metrics_replay",
+      note: `replayed latest seo import ${result.ingested}/${result.parsedRows} rows`,
+    });
     sendJson(res, 200, okEnvelope(result, { cmsAdapter }));
     return true;
   }
@@ -599,11 +811,10 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
     const sinceDays = url.searchParams.get("sinceDays") || undefined;
     const limit = url.searchParams.get("limit") || undefined;
     const windowDays = url.searchParams.get("windowDays") || undefined;
-    const { listSeoMetrics, getSeoMetricsWindowSummary } = require("./store");
-    const data = listSeoMetrics({ targetType, targetId, sinceDays, limit });
+    const data = seoOps.listSeoMetrics({ targetType, targetId, sinceDays, limit });
     const summary =
       targetType && targetId
-        ? getSeoMetricsWindowSummary({ targetType, targetId, windowDays: windowDays || 7 })
+        ? seoOps.getSeoMetricsWindowSummary({ targetType, targetId, windowDays: windowDays || 7 })
         : null;
     sendJson(res, 200, okEnvelope({ ...data, summary }, { cmsAdapter }));
     return true;
@@ -623,6 +834,127 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
     createEvent({ actor, action: "seo_metrics_ingest", note: `ingested seo metrics rows ${result.ingested}` });
     sendJson(res, 200, okEnvelope(result, { cmsAdapter }));
     return true;
+  }
+
+  if (url.pathname === "/ops/seo-metrics/import" && req.method === "POST") {
+    const auth = requireOpsCapability(req, "manage_recommendations");
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const body = (await readJsonBody(req)) ?? {};
+    const rows = Array.isArray(body.rows) ? body.rows : [];
+    const csvText = typeof body.csvText === "string" ? body.csvText : "";
+    const importDate = body.importDate ?? body.date ?? null;
+    const source = body.source ?? "search_console";
+    const result = seoOps.importSeoMetricsFromSearchConsole({ actor, rows, csvText, importDate, source });
+    createEvent({
+      actor,
+      action: "seo_metrics_import",
+      note: `imported seo metrics ${result.ingested}/${result.parsedRows} rows from ${source}`,
+    });
+    sendJson(res, 200, okEnvelope(result, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname === "/ops/seo-metrics/sync-search-console" && req.method === "POST") {
+    const auth = requireOpsCapability(req, "manage_recommendations");
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const body = (await readJsonBody(req)) ?? {};
+    try {
+      const { syncSeoMetricsFromSearchConsole } = require("./seo-search-console-sync");
+      const result = await syncSeoMetricsFromSearchConsole({
+        actor,
+        requestOverrides: {
+          siteUrl: body.siteUrl,
+          startDate: body.startDate,
+          endDate: body.endDate,
+          dimensions: body.dimensions,
+          rowLimit: body.rowLimit,
+          searchType: body.searchType,
+          dataState: body.dataState,
+          aggregationType: body.aggregationType,
+          rangeDays: body.rangeDays,
+          dataLagDays: body.dataLagDays,
+        },
+      });
+      sendJson(
+        res,
+        200,
+        okEnvelope(
+          {
+            ...result,
+          },
+          { cmsAdapter },
+        ),
+      );
+      return true;
+    } catch (error) {
+      sendJson(res, 400, errorEnvelope(error?.message || "Search Console sync failed.", { cmsAdapter }));
+      return true;
+    }
+  }
+
+  if (url.pathname === "/ops/seo-metrics/sync-search-console/control" && req.method === "POST") {
+    const auth = requireOpsCapability(req, "manage_recommendations");
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const body = (await readJsonBody(req)) ?? {};
+    const action = String(body.action || "").trim();
+    try {
+      const { syncSeoMetricsFromSearchConsole } = require("./seo-search-console-sync");
+      const { setSeoSyncPaused, clearSeoSyncBackoff, getSeoSyncStatus } = require("./store");
+      if (action === "retry_now") {
+        createEvent({
+          actor,
+          action: "seo_metrics_sync_search_console_retry_now",
+          note: "triggered Search Console sync manual retry",
+        });
+        const result = await syncSeoMetricsFromSearchConsole({ actor, automated: false });
+        sendJson(res, 200, okEnvelope({ action, result, seoSyncStatus: getSeoSyncStatus() }, { cmsAdapter }));
+        return true;
+      }
+      if (action === "clear_backoff") {
+        const seoSyncStatus = clearSeoSyncBackoff({ actor });
+        createEvent({
+          actor,
+          action: "seo_metrics_sync_search_console_clear_backoff",
+          note: "cleared Search Console sync backoff window",
+        });
+        sendJson(res, 200, okEnvelope({ action, seoSyncStatus }, { cmsAdapter }));
+        return true;
+      }
+      if (action === "pause") {
+        const seoSyncStatus = setSeoSyncPaused({ paused: true, actor });
+        createEvent({
+          actor,
+          action: "seo_metrics_sync_search_console_pause",
+          note: "paused Search Console sync automation",
+        });
+        sendJson(res, 200, okEnvelope({ action, seoSyncStatus }, { cmsAdapter }));
+        return true;
+      }
+      if (action === "resume") {
+        const seoSyncStatus = setSeoSyncPaused({ paused: false, actor });
+        createEvent({
+          actor,
+          action: "seo_metrics_sync_search_console_resume",
+          note: "resumed Search Console sync automation",
+        });
+        sendJson(res, 200, okEnvelope({ action, seoSyncStatus }, { cmsAdapter }));
+        return true;
+      }
+      sendJson(res, 400, errorEnvelope("Unknown Search Console sync control action.", { cmsAdapter }));
+      return true;
+    } catch (error) {
+      sendJson(res, 400, errorEnvelope(error?.message || "Search Console sync control failed.", { cmsAdapter }));
+      return true;
+    }
   }
 
   if (url.pathname.startsWith("/ops/support-cases/") && url.pathname.endsWith("/assign") && req.method === "POST") {

@@ -290,6 +290,10 @@ function repoChangeSeoOverridesPath() {
   return "apps/web/src/lib/seo/repo-change-overrides.json";
 }
 
+function repoChangeTargetRegistryPath() {
+  return "apps/control-plane/src/data/bootstrap-content.js";
+}
+
 function repoChangePullRequestTitle(change) {
   if (change?.prDraft?.title) return change.prDraft.title;
   return change.title ? `Repo change: ${change.title}` : `Repo change ${change.id}`;
@@ -779,6 +783,143 @@ async function upsertRepoChangeSeoOverrides(config, change, branchName) {
     body: JSON.stringify({
       message: `chore(repo-change): seo override ${change.id}`,
       content: toBase64Utf8(JSON.stringify(next, null, 2)),
+      branch: branchName,
+      sha: existing?.sha ?? undefined,
+    }),
+  });
+}
+
+function buildTargetRegistryEntry(change) {
+  const target = change?.registryTarget;
+  if (!target || !target.targetType || !target.targetId || !target.targetPath) return null;
+  const type = String(target.targetType);
+  const id = String(target.targetId);
+  const key = `${type}:${id}`;
+  const title = String(target.title || id);
+  const path = String(target.targetPath);
+
+  if (type === "product") {
+    return {
+      objectName: "productTargets",
+      key,
+      content: [
+        `  "${key}": {`,
+        `    targetType: "product",`,
+        `    targetId: "${id}",`,
+        `    title: "${title}",`,
+        `    targetPath: "${path}",`,
+        `    currentTitle: "${title}",`,
+        `    currentSubtitle: "",`,
+        `    currentShortDescription: "",`,
+        `    currentKeyBenefits: [],`,
+        `    publishedVersionRef: null,`,
+        `    versionHistory: [],`,
+        `  },`,
+      ].join("\n"),
+    };
+  }
+
+  if (type === "collection") {
+    return {
+      objectName: "collectionTargets",
+      key,
+      content: [
+        `  "${key}": {`,
+        `    targetType: "collection",`,
+        `    targetId: "${id}",`,
+        `    title: "${title}",`,
+        `    targetPath: "${path}",`,
+        `    currentHeroTitle: "${title}",`,
+        `    currentHeroSummary: "",`,
+        `    currentModules: ["hero"],`,
+        `    existingAngles: [],`,
+        `    publishedVersionRef: null,`,
+        `    versionHistory: [],`,
+        `  },`,
+      ].join("\n"),
+    };
+  }
+
+  if (type === "guide") {
+    return {
+      objectName: "guideTargets",
+      key,
+      content: [
+        `  "${key}": {`,
+        `    targetType: "guide",`,
+        `    targetId: "${id}",`,
+        `    title: "${title}",`,
+        `    targetPath: "${path}",`,
+        `    currentTitle: "${title}",`,
+        `    currentExcerpt: "",`,
+        `    publishedVersionRef: null,`,
+        `    versionHistory: [],`,
+        `  },`,
+      ].join("\n"),
+    };
+  }
+
+  return null;
+}
+
+function insertEntryIntoNamedObject(source, objectName, entryLineBlock) {
+  const marker = `const ${objectName} = {`;
+  const start = source.indexOf(marker);
+  if (start < 0) throw new Error(`Cannot locate ${objectName} declaration`);
+  const braceStart = source.indexOf("{", start);
+  if (braceStart < 0) throw new Error(`Cannot locate ${objectName} opening brace`);
+
+  let depth = 0;
+  let inString = false;
+  let stringChar = "";
+  for (let i = braceStart; i < source.length; i += 1) {
+    const ch = source[i];
+    if (inString) {
+      if (ch === "\\" && i + 1 < source.length) {
+        i += 1;
+        continue;
+      }
+      if (ch === stringChar) {
+        inString = false;
+        stringChar = "";
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      inString = true;
+      stringChar = ch;
+      continue;
+    }
+    if (ch === "{") depth += 1;
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        const before = source.slice(0, i);
+        const after = source.slice(i);
+        const insertion = before.endsWith("\n") ? entryLineBlock : `\n${entryLineBlock}`;
+        return `${before}${insertion}\n${after}`;
+      }
+    }
+  }
+  throw new Error(`Cannot locate ${objectName} closing brace`);
+}
+
+async function upsertRepoChangeTargetRegistry(config, change, branchName) {
+  const entry = buildTargetRegistryEntry(change);
+  if (!entry) return null;
+
+  const filePath = repoChangeTargetRegistryPath();
+  const existing = await getContents(config, filePath, branchName);
+  const currentText = fromBase64Utf8(existing?.content || "");
+  if (currentText.includes(`"${entry.key}":`)) return null;
+  const nextText = insertEntryIntoNamedObject(currentText, entry.objectName, entry.content);
+
+  return githubApi(`/repos/${config.owner}/${config.repo}/contents/${filePath}`, config, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      message: `chore(seo): register ${entry.key}`,
+      content: toBase64Utf8(nextText),
       branch: branchName,
       sha: existing?.sha ?? undefined,
     }),
@@ -1436,6 +1577,7 @@ async function createRepoChangePullRequest({ id, actor = "system:repo_pr" }) {
     await ensureBranchExists(config, change.branchName, baseSha);
     const manifestCommitResult = await upsertRepoChangeManifest(config, change, change.branchName);
     const seoCommitResult = await upsertRepoChangeSeoOverrides(config, change, change.branchName);
+    const registryCommitResult = await upsertRepoChangeTargetRegistry(config, change, change.branchName);
     const pr = await openDraftPullRequest(config, change, change.branchName, defaultBranch);
     const labeled = await maybeApplyRiskFollowupLabels(
       change,
@@ -1465,7 +1607,12 @@ async function createRepoChangePullRequest({ id, actor = "system:repo_pr" }) {
           prUrl: pr.html_url ?? null,
           prState: pr.state ?? null,
           prLabels: labeled?.prLabels ?? [],
-          commitSha: seoCommitResult?.commit?.sha ?? manifestCommitResult?.commit?.sha ?? pr?.head?.sha ?? null,
+          commitSha:
+            registryCommitResult?.commit?.sha ??
+            seoCommitResult?.commit?.sha ??
+            manifestCommitResult?.commit?.sha ??
+            pr?.head?.sha ??
+            null,
           lastSyncedAt: new Date().toISOString(),
           syncState: "ok",
           syncMessage: "Draft PR created from repo change.",
@@ -1484,7 +1631,12 @@ async function createRepoChangePullRequest({ id, actor = "system:repo_pr" }) {
       prUrl: pr.html_url ?? null,
       prState: pr.state ?? null,
       prLabels: labeled?.prLabels ?? [],
-      commitSha: seoCommitResult?.commit?.sha ?? manifestCommitResult?.commit?.sha ?? pr?.head?.sha ?? null,
+      commitSha:
+        registryCommitResult?.commit?.sha ??
+        seoCommitResult?.commit?.sha ??
+        manifestCommitResult?.commit?.sha ??
+        pr?.head?.sha ??
+        null,
       lastSyncedAt: new Date().toISOString(),
       syncState: "ok",
       syncMessage: "Draft PR created from repo change.",
