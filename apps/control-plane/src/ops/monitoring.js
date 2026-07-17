@@ -1,11 +1,8 @@
 const { adapterName } = require("../cms-adapters");
-const { collectionTargets, faqTargets, guideTargets, productTargets } = require("../data/bootstrap-content");
 const {
-  getPurchaseDiagnostics,
   getSignalsRuntimeStatus,
   listRecommendations,
   listRuleTuningProposals,
-  listTargetSummaries,
   listTrackedEvents,
   createAiConciergeFunnelRecommendation,
   createFulfillmentBacklogRecommendation,
@@ -23,17 +20,26 @@ const {
   syncAiConciergeTuningProposal,
   maybeOpenAiConciergeDraftPullRequestForProposal,
   createAiConciergeRiskFollowupProposal,
+  listDailyMonitoringSnapshots,
+  upsertDailyMonitoringSnapshot,
 } = require("../signals/store");
 const {
   listEvents,
   listRepoChanges,
+  getSeoSyncStatus,
   upsertAlertsFromMonitoring,
   upsertCustomerNotificationsFromMonitoring,
   autoSendEligibleCustomerNotifications,
   upsertSupportCasesFromMonitoring,
-  listSeoMetrics,
-  getSeoMetricsWindowSummary,
+  commerceOps,
+  resultGovernanceOps,
+  seoOps,
+  findPlaybookByKey,
+  upsertPlaybook,
+  listPlaybooks,
 } = require("./store");
+const { getSeoSearchConsoleAutomationConfig, summarizeSeoSearchConsoleHealth } = require("./seo-search-console-sync");
+const { getAutoActionPolicy } = require("./auto-action-policy");
 
 function hoursAgo(hours) {
   return Date.now() - Math.max(0, Number(hours || 0)) * 60 * 60 * 1000;
@@ -315,411 +321,6 @@ function summarizeAiConcierge(events) {
   };
 }
 
-function summarizeCommerceCheckout(events) {
-  const commerceEvents = Array.isArray(events) ? events : [];
-  const starts = commerceEvents.filter((item) => item.eventType === "checkout_start");
-  const completes = commerceEvents.filter((item) => item.eventType === "checkout_complete");
-  const purchases = commerceEvents.filter((item) => item.eventType === "purchase");
-  const sourceMap = new Map();
-  const pathMap = new Map();
-
-  const resolveSource = (item) => {
-    const attr = String(item?.metadata?.attribution?.src || "").trim();
-    if (attr) return attr;
-    const source = String(item?.source || "").trim();
-    return source || "unknown";
-  };
-
-  const ensureSource = (key) => {
-    const sourceKey = key || "unknown";
-    if (!sourceMap.has(sourceKey)) {
-      sourceMap.set(sourceKey, {
-        source: sourceKey,
-        starts: new Set(),
-        completes: new Set(),
-        purchases: 0,
-      });
-    }
-    return sourceMap.get(sourceKey);
-  };
-
-  const resolvePathKey = (item) => {
-    const source = resolveSource(item);
-    const targetType = String(item?.targetType || "unknown").trim() || "unknown";
-    const targetId = String(item?.targetId || "unknown").trim() || "unknown";
-    return `${source}::${targetType}::${targetId}`;
-  };
-
-  const ensurePath = (item) => {
-    const key = resolvePathKey(item);
-    if (!pathMap.has(key)) {
-      pathMap.set(key, {
-        key,
-        source: resolveSource(item),
-        targetType: String(item?.targetType || "unknown").trim() || "unknown",
-        targetId: String(item?.targetId || "unknown").trim() || "unknown",
-        contentRef: item?.contentRef ?? null,
-        starts: new Set(),
-        completes: new Set(),
-        purchases: 0,
-      });
-    }
-    return pathMap.get(key);
-  };
-
-  const uniqueStarts = new Set(starts.map((item) => item.dedupeKey || `${item.targetType}:${item.targetId}:${item.at}`));
-  const uniqueCompletes = new Set(completes.map((item) => item.dedupeKey || `${item.targetType}:${item.targetId}:${item.at}`));
-
-  starts.forEach((item) => {
-    const group = ensureSource(resolveSource(item));
-    group.starts.add(item.dedupeKey || `${item.targetType}:${item.targetId}:${item.at}`);
-    const path = ensurePath(item);
-    path.starts.add(item.dedupeKey || `${item.targetType}:${item.targetId}:${item.at}`);
-  });
-  completes.forEach((item) => {
-    const group = ensureSource(resolveSource(item));
-    group.completes.add(item.dedupeKey || `${item.targetType}:${item.targetId}:${item.at}`);
-    const path = ensurePath(item);
-    path.completes.add(item.dedupeKey || `${item.targetType}:${item.targetId}:${item.at}`);
-  });
-  purchases.forEach((item) => {
-    const group = ensureSource(resolveSource(item));
-    group.purchases += 1;
-    const path = ensurePath(item);
-    path.purchases += 1;
-  });
-
-  const checkoutStarts = uniqueStarts.size;
-  const checkoutCompletes = uniqueCompletes.size;
-  const checkoutDropoff = Math.max(0, checkoutStarts - checkoutCompletes);
-  const checkoutCompletionRate = checkoutStarts > 0 ? checkoutCompletes / checkoutStarts : 0;
-  const bySource = Array.from(sourceMap.values())
-    .map((item) => {
-      const sourceStarts = item.starts.size;
-      const sourceCompletes = item.completes.size;
-      const paths = Array.from(pathMap.values())
-        .filter((entry) => entry.source === item.source)
-        .map((entry) => {
-          const pathStarts = entry.starts.size;
-          const pathCompletes = entry.completes.size;
-          return {
-            key: entry.key,
-            source: entry.source,
-            targetType: entry.targetType,
-            targetId: entry.targetId,
-            contentRef: entry.contentRef,
-            checkoutStarts: pathStarts,
-            checkoutCompletes: pathCompletes,
-            checkoutDropoff: Math.max(0, pathStarts - pathCompletes),
-            checkoutCompletionRate: pathStarts > 0 ? pathCompletes / pathStarts : 0,
-            purchases24h: entry.purchases,
-          };
-        })
-        .sort((a, b) => {
-          if (b.checkoutDropoff !== a.checkoutDropoff) return b.checkoutDropoff - a.checkoutDropoff;
-          if (b.checkoutStarts !== a.checkoutStarts) return b.checkoutStarts - a.checkoutStarts;
-          return `${a.targetType}:${a.targetId}`.localeCompare(`${b.targetType}:${b.targetId}`);
-        })
-        .slice(0, 5);
-      return {
-        source: item.source,
-        checkoutStarts: sourceStarts,
-        checkoutCompletes: sourceCompletes,
-        checkoutDropoff: Math.max(0, sourceStarts - sourceCompletes),
-        checkoutCompletionRate: sourceStarts > 0 ? sourceCompletes / sourceStarts : 0,
-        purchases24h: item.purchases,
-        paths,
-      };
-    })
-    .sort((a, b) => {
-      if (b.checkoutStarts !== a.checkoutStarts) return b.checkoutStarts - a.checkoutStarts;
-      return a.source.localeCompare(b.source);
-    });
-
-  return {
-    checkoutStarts,
-    checkoutCompletes,
-    checkoutDropoff,
-    checkoutCompletionRate,
-    purchases24h: purchases.length,
-    bySource,
-  };
-}
-
-function summarizePaymentResults(events) {
-  const items = Array.isArray(events) ? events : [];
-  const byType = {
-    payment_paid: new Set(),
-    payment_authorized: new Set(),
-    payment_failed: new Set(),
-    payment_canceled: new Set(),
-    payment_requires_action: new Set(),
-  };
-  const targetCounts = new Map();
-  const reasonCounts = new Map();
-  const reasonLabel = (reason) => {
-    const key = String(reason || "").trim();
-    if (key === "declined") return "declined";
-    if (key === "timeout") return "timeout";
-    if (key === "customer_abandon") return "customer abandon";
-    if (key === "action_required") return "action required";
-    if (key === "capture_pending") return "capture pending";
-    if (key === "completed") return "completed";
-    if (key === "pending_sync") return "pending sync";
-    if (key === "provider_error") return "provider error";
-    return "unknown";
-  };
-
-  const resolveOrderKey = (item) =>
-    String(item?.metadata?.orderId || item?.dedupeKey || `${item?.targetType || "unknown"}:${item?.targetId || "unknown"}:${item?.at || ""}`);
-  const resolveTargetPath = (item) => {
-    const contentRef = String(item?.contentRef || "").trim();
-    if (contentRef) return `/products/${contentRef}`;
-    const targetType = String(item?.targetType || "unknown").trim() || "unknown";
-    const targetId = String(item?.targetId || "unknown").trim() || "unknown";
-    return `${targetType}:${targetId}`;
-  };
-
-  const registerTarget = (issueKey, item) => {
-    const targetType = String(item?.targetType || "unknown").trim() || "unknown";
-    const targetId = String(item?.targetId || "unknown").trim() || "unknown";
-    const key = `${issueKey}::${targetType}::${targetId}`;
-    const existing = targetCounts.get(key) ?? {
-      key,
-      issueKey,
-      targetType,
-      targetId,
-      contentRef: item?.contentRef ?? null,
-      targetPath: resolveTargetPath(item),
-      orders: new Set(),
-    };
-    existing.orders.add(resolveOrderKey(item));
-    targetCounts.set(key, existing);
-  };
-  const registerReason = (issueKey, item) => {
-    const reason = String(item?.metadata?.paymentIssueReason || "").trim() || "unknown";
-    const key = `${issueKey}::${reason}`;
-    const existing = reasonCounts.get(key) ?? {
-      key,
-      issueKey,
-      reason,
-      orders: new Set(),
-    };
-    existing.orders.add(resolveOrderKey(item));
-    reasonCounts.set(key, existing);
-  };
-
-  items.forEach((item) => {
-    if (!Object.prototype.hasOwnProperty.call(byType, item?.eventType)) return;
-    byType[item.eventType].add(resolveOrderKey(item));
-    if (item?.eventType !== "payment_paid" && item?.eventType !== "payment_authorized") {
-      registerTarget(item.eventType, item);
-      registerReason(item.eventType, item);
-    }
-  });
-
-  const paid = byType.payment_paid.size;
-  const authorized = byType.payment_authorized.size;
-  const failed = byType.payment_failed.size;
-  const canceled = byType.payment_canceled.size;
-  const requiresAction = byType.payment_requires_action.size;
-  const issues = failed + canceled + requiresAction;
-  const terminal = paid + failed + canceled;
-  const buildTopTargets = (issueKey) =>
-    Array.from(targetCounts.values())
-      .filter((item) => item.issueKey === issueKey)
-      .map((item) => ({
-        key: item.key,
-        issueKey: item.issueKey,
-        targetType: item.targetType,
-        targetId: item.targetId,
-        contentRef: item.contentRef,
-        targetPath: item.targetPath,
-        affectedOrders: item.orders.size,
-      }))
-      .sort((a, b) => b.affectedOrders - a.affectedOrders || `${a.targetType}:${a.targetId}`.localeCompare(`${b.targetType}:${b.targetId}`))
-      .slice(0, 5);
-  const buildTopReasons = (issueKey) =>
-    Array.from(reasonCounts.values())
-      .filter((item) => item.issueKey === issueKey)
-      .map((item) => ({
-        key: item.key,
-        issueKey: item.issueKey,
-        reason: item.reason,
-        label: reasonLabel(item.reason),
-        affectedOrders: item.orders.size,
-      }))
-      .sort((a, b) => b.affectedOrders - a.affectedOrders || a.label.localeCompare(b.label))
-      .slice(0, 3);
-  const dominantReason = (issueKey) => buildTopReasons(issueKey)[0] ?? null;
-
-  return {
-    paid,
-    authorized,
-    failed,
-    canceled,
-    requiresAction,
-    issues,
-    issueRate: terminal > 0 ? issues / terminal : 0,
-    recoveryLanes: {
-      providerReview: failed,
-      customerRetry: canceled,
-      customerAction: requiresAction,
-      awaitingCapture: authorized,
-      fulfillmentReady: paid,
-    },
-    topReasons: {
-      payment_failed: buildTopReasons("payment_failed"),
-      payment_canceled: buildTopReasons("payment_canceled"),
-      payment_requires_action: buildTopReasons("payment_requires_action"),
-    },
-    dominantReasons: {
-      payment_failed: dominantReason("payment_failed"),
-      payment_canceled: dominantReason("payment_canceled"),
-      payment_requires_action: dominantReason("payment_requires_action"),
-    },
-    topTargets: {
-      payment_failed: buildTopTargets("payment_failed"),
-      payment_canceled: buildTopTargets("payment_canceled"),
-      payment_requires_action: buildTopTargets("payment_requires_action"),
-    },
-  };
-}
-
-function summarizeFulfillmentResults(events) {
-  const items = Array.isArray(events) ? events : [];
-  const byType = {
-    fulfillment_processing: new Set(),
-    fulfillment_shipped: new Set(),
-    fulfillment_delivered: new Set(),
-  };
-  const targetCounts = new Map();
-  const resolveOrderKey = (item) =>
-    String(item?.metadata?.orderId || item?.dedupeKey || `${item?.targetType || "unknown"}:${item?.targetId || "unknown"}:${item?.at || ""}`);
-  const resolveTargetPath = (item) => {
-    const contentRef = String(item?.contentRef || "").trim();
-    if (contentRef) return `/products/${contentRef}`;
-    const targetType = String(item?.targetType || "unknown").trim() || "unknown";
-    const targetId = String(item?.targetId || "unknown").trim() || "unknown";
-    return `${targetType}:${targetId}`;
-  };
-  const registerTarget = (eventType, item) => {
-    const targetType = String(item?.targetType || "unknown").trim() || "unknown";
-    const targetId = String(item?.targetId || "unknown").trim() || "unknown";
-    const key = `${eventType}::${targetType}::${targetId}`;
-    const existing = targetCounts.get(key) ?? {
-      key,
-      eventType,
-      targetType,
-      targetId,
-      contentRef: item?.contentRef ?? null,
-      targetPath: resolveTargetPath(item),
-      orders: new Set(),
-    };
-    existing.orders.add(resolveOrderKey(item));
-    targetCounts.set(key, existing);
-  };
-
-  items.forEach((item) => {
-    if (!Object.prototype.hasOwnProperty.call(byType, item?.eventType)) return;
-    byType[item.eventType].add(resolveOrderKey(item));
-    registerTarget(item.eventType, item);
-  });
-
-  const buildTopTargets = (eventType) =>
-    Array.from(targetCounts.values())
-      .filter((item) => item.eventType === eventType)
-      .map((item) => ({
-        key: item.key,
-        eventType: item.eventType,
-        targetType: item.targetType,
-        targetId: item.targetId,
-        contentRef: item.contentRef,
-        targetPath: item.targetPath,
-        affectedOrders: item.orders.size,
-      }))
-      .sort((a, b) => b.affectedOrders - a.affectedOrders || `${a.targetType}:${a.targetId}`.localeCompare(`${b.targetType}:${b.targetId}`))
-      .slice(0, 5);
-
-  return {
-    processing: byType.fulfillment_processing.size,
-    shipped: byType.fulfillment_shipped.size,
-    delivered: byType.fulfillment_delivered.size,
-    topTargets: {
-      fulfillment_processing: buildTopTargets("fulfillment_processing"),
-      fulfillment_shipped: buildTopTargets("fulfillment_shipped"),
-      fulfillment_delivered: buildTopTargets("fulfillment_delivered"),
-    },
-  };
-}
-
-function summarizeRefundResults(events) {
-  const items = Array.isArray(events) ? events : [];
-  const byType = {
-    refund_requested: new Set(),
-    refund_refunded: new Set(),
-  };
-  const targetCounts = new Map();
-  const resolveOrderKey = (item) =>
-    String(item?.metadata?.orderId || item?.dedupeKey || `${item?.targetType || "unknown"}:${item?.targetId || "unknown"}:${item?.at || ""}`);
-  const resolveTargetPath = (item) => {
-    const contentRef = String(item?.contentRef || "").trim();
-    if (contentRef) return `/products/${contentRef}`;
-    const targetType = String(item?.targetType || "unknown").trim() || "unknown";
-    const targetId = String(item?.targetId || "unknown").trim() || "unknown";
-    return `${targetType}:${targetId}`;
-  };
-  const registerTarget = (eventType, item) => {
-    const targetType = String(item?.targetType || "unknown").trim() || "unknown";
-    const targetId = String(item?.targetId || "unknown").trim() || "unknown";
-    const key = `${eventType}::${targetType}::${targetId}`;
-    const existing = targetCounts.get(key) ?? {
-      key,
-      eventType,
-      targetType,
-      targetId,
-      contentRef: item?.contentRef ?? null,
-      targetPath: resolveTargetPath(item),
-      orders: new Set(),
-    };
-    existing.orders.add(resolveOrderKey(item));
-    targetCounts.set(key, existing);
-  };
-
-  items.forEach((item) => {
-    if (!Object.prototype.hasOwnProperty.call(byType, item?.eventType)) return;
-    byType[item.eventType].add(resolveOrderKey(item));
-    registerTarget(item.eventType, item);
-  });
-
-  const buildTopTargets = (eventType) =>
-    Array.from(targetCounts.values())
-      .filter((item) => item.eventType === eventType)
-      .map((item) => ({
-        key: item.key,
-        eventType: item.eventType,
-        targetType: item.targetType,
-        targetId: item.targetId,
-        contentRef: item.contentRef,
-        targetPath: item.targetPath,
-        affectedOrders: item.orders.size,
-      }))
-      .sort((a, b) => b.affectedOrders - a.affectedOrders || `${a.targetType}:${a.targetId}`.localeCompare(`${b.targetType}:${b.targetId}`))
-      .slice(0, 5);
-
-  const requested = byType.refund_requested.size;
-  const refunded = byType.refund_refunded.size;
-  return {
-    requested,
-    refunded,
-    backlog: Math.max(0, requested - refunded),
-    topTargets: {
-      refund_requested: buildTopTargets("refund_requested"),
-      refund_refunded: buildTopTargets("refund_refunded"),
-    },
-  };
-}
-
 function buildAiConciergeGovernanceSummary(proposals) {
   const items = Array.isArray(proposals) ? proposals : [];
   const followups = items.filter((p) => p?.context?.source === "ai-concierge-followup");
@@ -754,6 +355,9 @@ function buildAiConciergeGovernanceSummary(proposals) {
         id: p.id,
         status: p.status,
         headline: p.reviewSummary?.headline ?? p.ruleMeta?.description ?? p.ruleId ?? "proposal",
+        state: p.reviewSummary?.state ?? null,
+        signals: Array.isArray(p.reviewSummary?.signals) ? p.reviewSummary.signals.slice(0, 4) : [],
+        postApplyEffect: p.postApplyEffect ?? null,
         prUrl: p.followupExecution?.prUrl ?? null,
         nextStep: p.followupExecution?.recommendedNextStep?.label ?? null,
       }));
@@ -820,6 +424,9 @@ function buildCommerceGovernanceSummary({ recommendations, proposals }) {
         source: item.targetId,
         path: describePath(item.context),
         headline: item.reviewSummary?.headline ?? item.summary ?? "commerce journey proposal",
+        state: item.reviewSummary?.state ?? null,
+        signals: Array.isArray(item.reviewSummary?.signals) ? item.reviewSummary.signals.slice(0, 4) : [],
+        postApplyEffect: item.postApplyEffect ?? null,
         nextStep: item.reviewSummary?.recommendation ?? null,
       }));
 
@@ -882,6 +489,9 @@ function buildPaymentGovernanceSummary({ recommendations, proposals }) {
         source: item.targetId,
         path: describePath(item.context),
         headline: item.reviewSummary?.headline ?? item.summary ?? "payment recovery proposal",
+        state: item.reviewSummary?.state ?? null,
+        signals: Array.isArray(item.reviewSummary?.signals) ? item.reviewSummary.signals.slice(0, 4) : [],
+        postApplyEffect: item.postApplyEffect ?? null,
         nextStep: item.reviewSummary?.recommendation ?? null,
       }));
 
@@ -1318,99 +928,2902 @@ function publishingAlertLevel({ warningPublishes24h, blockedPublishes24h, rollba
   return null;
 }
 
-function buildSeoGeoRecommendationSummary() {
-  const contentGaps = [];
-  const thinContent = [];
-  const internalLinkGaps = [];
+function buildSeoRuntimeJudgment({ seoSyncHealth, seoFreshness, seoImportDiagnostics } = {}) {
+  const issues = [];
+  const latestImport = seoImportDiagnostics?.latestRun ?? null;
 
-  Object.values(faqTargets).forEach((target) => {
-    const faqCount = Array.isArray(target.existingFaqs) ? target.existingFaqs.length : 0;
-    if (faqCount < 5) {
-      contentGaps.push({
-        key: `faq:${target.targetType}:${target.targetId}`,
-        targetType: "faq",
-        targetId: `${target.targetType}:${target.targetId}`,
-        title: `${target.title} FAQ`,
-        targetPath: target.targetPath,
-        observedCount: faqCount,
-        threshold: 5,
-        missingAssetType: "faq_cluster",
+  if (seoSyncHealth?.health === "degraded") {
+    issues.push({
+      severity: 3,
+      focusArea: "sync",
+      headline: "SEO runtime is degraded by Search Console sync failures",
+      detail: seoSyncHealth.detail,
+      actionHint: "Check the latest Search Console sync error, fix the upstream issue, then retry the sync.",
+    });
+  } else if (["warning", "paused", "not_configured"].includes(String(seoSyncHealth?.health || ""))) {
+    issues.push({
+      severity: 2,
+      focusArea: "sync",
+      headline:
+        seoSyncHealth?.health === "paused"
+          ? "SEO runtime is waiting on a paused Search Console sync"
+          : seoSyncHealth?.health === "not_configured"
+            ? "SEO runtime needs Search Console sync configuration"
+            : "SEO runtime needs Search Console sync attention",
+      detail: seoSyncHealth?.detail || "Search Console sync needs attention.",
+      actionHint:
+        seoSyncHealth?.recoveryHint ||
+        (seoSyncHealth?.health === "paused"
+          ? "Resume automation or run a manual retry when you are ready to continue SEO ingestion."
+          : seoSyncHealth?.health === "not_configured"
+            ? "Add the missing Search Console credentials and site settings before relying on automated SEO monitoring."
+            : "Review the sync runtime, clear backoff if needed, and confirm the next successful import."),
+    });
+  }
+
+  if (seoFreshness?.status === "critical") {
+    issues.push({
+      severity: 3,
+      focusArea: "freshness",
+      headline: "SEO runtime is degraded by stale metrics",
+      detail:
+        seoFreshness.daysSinceLatest == null
+          ? "SEO metrics do not have a recent successful import."
+          : `Latest SEO metrics are ${seoFreshness.daysSinceLatest} day(s) old${seoFreshness.latestDate ? `, last dated ${seoFreshness.latestDate}` : ""}.`,
+      actionHint: "Restore a successful SEO sync before acting on SEO recommendations that depend on fresh metrics.",
+    });
+  } else if (["warning", "not_configured"].includes(String(seoFreshness?.status || ""))) {
+    issues.push({
+      severity: 2,
+      focusArea: "freshness",
+      headline:
+        seoFreshness?.status === "not_configured"
+          ? "SEO runtime is missing metrics freshness coverage"
+          : "SEO metrics freshness needs attention",
+      detail:
+        seoFreshness?.status === "not_configured"
+          ? "No recent SEO metrics are available yet, so freshness checks cannot confirm current data coverage."
+          : `Latest SEO metrics are ${seoFreshness?.daysSinceLatest ?? "n/a"} day(s) old${seoFreshness?.latestDate ? `, last dated ${seoFreshness.latestDate}` : ""}.`,
+      actionHint: "Run or repair the next SEO sync so freshness returns to a healthy window.",
+    });
+  }
+
+  if (latestImport?.status === "warning") {
+    issues.push({
+      severity: 2,
+      focusArea: "import_gap",
+      headline: "SEO runtime still has unmapped import gaps",
+      detail: `Latest SEO import still has ${latestImport.activeUnmappedPages ?? 0} active unmapped page(s).`,
+      actionHint: "Review unmapped pages, register the missing targets, then replay or rerun the import.",
+    });
+  } else if (latestImport?.status === "partial") {
+    issues.push({
+      severity: 1,
+      focusArea: "import_gap",
+      headline: "SEO runtime has minor import mapping gaps",
+      detail: `Latest SEO import has ${latestImport.activeUnmappedPages ?? 0} active unmapped page(s) and ${latestImport.resolvedUnmappedPages ?? 0} page(s) waiting for refreshed data.`,
+      actionHint: "Tidy the remaining unmapped pages before they accumulate into a larger import gap.",
+    });
+  }
+
+  const highestSeverity = issues.reduce((max, item) => Math.max(max, item.severity), 0);
+  if (highestSeverity === 0) {
+    return {
+      health: "healthy",
+      headline: "SEO runtime is healthy",
+      detail: `Freshness is healthy${seoFreshness?.latestDate ? `, latest metrics dated ${seoFreshness.latestDate}` : ""}; Search Console sync is healthy; no active import gap needs immediate attention.`,
+      focusArea: "healthy",
+      actionHint: "Keep the current sync cadence and monitor for new SEO anomalies rather than runtime drift.",
+    };
+  }
+
+  const topIssues = issues.filter((item) => item.severity === highestSeverity);
+  if (topIssues.length === 1) {
+    const primary = topIssues[0];
+    return {
+      health: highestSeverity >= 3 ? "degraded" : "warning",
+      headline: primary.headline,
+      detail: primary.detail,
+      focusArea: primary.focusArea,
+      actionHint: primary.actionHint,
+    };
+  }
+
+  return {
+    health: highestSeverity >= 3 ? "degraded" : "warning",
+    headline: "SEO runtime needs attention across multiple signals",
+    detail: topIssues
+      .slice(0, 2)
+      .map((item) => item.detail)
+      .join(" "),
+    focusArea: "combined",
+    actionHint: "Start with Search Console sync health and freshness, then clean up import gaps before relying on SEO recommendations.",
+  };
+}
+
+function buildSeoSyncHistorySummary({ seoSyncStatus } = {}) {
+  const runs = Array.isArray(seoSyncStatus?.recentRuns) ? seoSyncStatus.recentRuns.slice(0, 12) : [];
+  const statusCounts = runs.reduce(
+    (acc, run) => {
+      if (run?.status === "success") acc.success += 1;
+      else if (run?.status === "failure") acc.failure += 1;
+      else if (run?.status === "skipped") acc.skipped += 1;
+      return acc;
+    },
+    { success: 0, failure: 0, skipped: 0 },
+  );
+  const latestSuccessRun = runs.find((run) => run?.status === "success") || null;
+  const latestFailureRun = runs.find((run) => run?.status === "failure") || null;
+  const latestSkippedRun = runs.find((run) => run?.status === "skipped") || null;
+  const failureRuns = runs.filter((run) => run?.status === "failure");
+  const firstFailureInCurrentStreak =
+    seoSyncStatus?.consecutiveFailures > 0
+      ? failureRuns[Math.min(failureRuns.length - 1, Math.max(0, seoSyncStatus.consecutiveFailures - 1))] || latestFailureRun
+      : null;
+
+  let comparison = null;
+  if (latestSuccessRun || latestFailureRun) {
+    comparison = {
+      latestSuccessAt: latestSuccessRun?.at ?? null,
+      latestFailureAt: latestFailureRun?.at ?? null,
+      latestSuccessRows: latestSuccessRun
+        ? {
+            fetched: latestSuccessRun.fetchedRows ?? 0,
+            ingested: latestSuccessRun.ingestedRows ?? 0,
+          }
+        : null,
+      latestFailure:
+        latestFailureRun != null
+          ? {
+              category: latestFailureRun.errorCategory ?? "unknown",
+              code: latestFailureRun.errorCode ?? "unknown",
+              retryable: latestFailureRun.errorRetryable ?? null,
+            }
+          : null,
+      changedSinceLastSuccess:
+        Boolean(latestSuccessRun?.at && latestFailureRun?.at) &&
+        Date.parse(String(latestFailureRun.at || "")) > Date.parse(String(latestSuccessRun.at || "")),
+    };
+  }
+
+  return {
+    totalRunsTracked: runs.length,
+    statusCounts,
+    latestSuccessRun,
+    latestFailureRun,
+    latestSkippedRun,
+    firstFailureInCurrentStreak,
+    comparison,
+    recentRuns: runs,
+  };
+}
+
+function mapSeoSyncControlAction(action) {
+  if (action === "seo_metrics_sync_search_console_retry_now") return "retry_now";
+  if (action === "seo_metrics_sync_search_console_pause") return "pause";
+  if (action === "seo_metrics_sync_search_console_resume") return "resume";
+  if (action === "seo_metrics_sync_search_console_clear_backoff") return "clear_backoff";
+  return null;
+}
+
+function assessSeoSyncIntervention({ action, postRuns } = {}) {
+  const runs = Array.isArray(postRuns) ? postRuns : [];
+  if (action === "pause") {
+    return {
+      status: "paused_intentionally",
+      label: "paused intentionally",
+      detail: "Automation was paused on purpose, so no recovery judgment is needed yet.",
+    };
+  }
+  if (!runs.length) {
+    return {
+      status: "pending_evidence",
+      label: "pending evidence",
+      detail: "No sync run has been recorded after this manual action yet.",
+    };
+  }
+  const firstMeaningfulRun = runs.find((run) => run?.status === "success" || run?.status === "failure") || null;
+  if (!firstMeaningfulRun) {
+    return {
+      status: "pending_evidence",
+      label: "pending evidence",
+      detail: "Only skipped runs have been recorded after this action, so the recovery result is still unclear.",
+    };
+  }
+  if (firstMeaningfulRun.status === "failure") {
+    return {
+      status: "still_failing",
+      label: "still failing",
+      detail: `The first sync run after this action still failed${firstMeaningfulRun.errorCategory ? ` with ${firstMeaningfulRun.errorCategory}` : ""}.`,
+    };
+  }
+  const laterFailure = runs.find((run) => run?.status === "failure");
+  if (laterFailure) {
+    return {
+      status: "regressed",
+      label: "regressed",
+      detail: `A sync run succeeded after this action, but a later run failed again${laterFailure.errorCategory ? ` with ${laterFailure.errorCategory}` : ""}.`,
+    };
+  }
+  return {
+    status: "recovered",
+    label: "recovered",
+    detail: `The first sync run after this action succeeded${firstMeaningfulRun.ingestedRows ? ` and ingested ${firstMeaningfulRun.ingestedRows} row(s)` : ""}.`,
+  };
+}
+
+function buildSeoSyncControlAudit({ events, seoSyncHistory } = {}) {
+  const runs = Array.isArray(seoSyncHistory?.recentRuns) ? seoSyncHistory.recentRuns : [];
+  const controlEvents = (Array.isArray(events) ? events : [])
+    .filter((event) => mapSeoSyncControlAction(String(event?.action || "")))
+    .slice(0, 8)
+    .map((event) => {
+      const action = mapSeoSyncControlAction(String(event?.action || ""));
+      const eventTs = Date.parse(String(event?.at || ""));
+      const postRuns = Number.isFinite(eventTs)
+        ? runs
+            .filter((run) => {
+              const runTs = Date.parse(String(run?.at || ""));
+              return Number.isFinite(runTs) && runTs >= eventTs;
+            })
+            .sort((a, b) => Date.parse(String(a?.at || "")) - Date.parse(String(b?.at || "")))
+        : [];
+      const nextRun = postRuns[0] || null;
+      const assessment = assessSeoSyncIntervention({
+        action,
+        postRuns: postRuns.slice(0, 3),
+      });
+      return {
+        at: event?.at ?? null,
+        actor: event?.actor ?? null,
+        action,
+        note: event?.note ?? null,
+        assessment,
+        nextRun:
+          nextRun != null
+            ? {
+                at: nextRun.at ?? null,
+                status: nextRun.status ?? null,
+                errorCategory: nextRun.errorCategory ?? null,
+                errorCode: nextRun.errorCode ?? null,
+                retryable: nextRun.errorRetryable ?? null,
+                reason: nextRun.reason ?? null,
+                ingestedRows: nextRun.ingestedRows ?? 0,
+              }
+            : null,
+      };
+    });
+
+  const actionCounts = controlEvents.reduce(
+    (acc, item) => {
+      if (!item?.action) return acc;
+      acc[item.action] = (acc[item.action] || 0) + 1;
+      return acc;
+    },
+    { retry_now: 0, pause: 0, resume: 0, clear_backoff: 0 },
+  );
+
+  const latestRecoveryAction =
+    controlEvents.find((item) => ["retry_now", "resume", "clear_backoff"].includes(String(item?.action || ""))) || null;
+
+  return {
+    totalActionsTracked: controlEvents.length,
+    actionCounts,
+    latestAction: controlEvents[0] || null,
+    latestRecoveryAction,
+    recentActions: controlEvents,
+  };
+}
+
+function buildSeoSyncRecoveryReview({ seoSyncControlAudit } = {}) {
+  const latest = seoSyncControlAudit?.latestRecoveryAction ?? null;
+  if (!latest) {
+    return {
+      status: "not_applicable",
+      label: "no manual recovery yet",
+      detail: "No recovery-oriented manual intervention has been recorded yet.",
+      latestAction: null,
+    };
+  }
+  return {
+    status: latest.assessment?.status || "pending_evidence",
+    label: latest.assessment?.label || "pending evidence",
+    detail: latest.assessment?.detail || "Recovery result is still being evaluated.",
+    latestAction: {
+      at: latest.at ?? null,
+      actor: latest.actor ?? null,
+      action: latest.action ?? null,
+      nextRun: latest.nextRun ?? null,
+    },
+  };
+}
+
+function buildResultGovernanceRuntimeJudgment({ paymentResults24h, fulfillmentResults24h, refundResults24h, workflowSnapshot } = {}) {
+  const payment = paymentResults24h && typeof paymentResults24h === "object" ? paymentResults24h : {};
+  const fulfillment = fulfillmentResults24h && typeof fulfillmentResults24h === "object" ? fulfillmentResults24h : {};
+  const refund = refundResults24h && typeof refundResults24h === "object" ? refundResults24h : {};
+
+  const lanes = workflowSnapshot?.lanes && typeof workflowSnapshot.lanes === "object" ? workflowSnapshot.lanes : {};
+  const paymentLane = lanes.payment ?? null;
+  const fulfillmentLane = lanes.fulfillment ?? null;
+  const refundLane = lanes.refund ?? null;
+
+  const paymentIssues = Number(payment.issues ?? (Number(payment.failed ?? 0) + Number(payment.canceled ?? 0) + Number(payment.requiresAction ?? 0)));
+  const paymentIssueRate = Number(payment.issueRate ?? 0);
+  const fulfillmentProcessing = Number(fulfillment.processing ?? 0);
+  const fulfillmentShipped = Number(fulfillment.shipped ?? 0);
+  const fulfillmentDelivered = Number(fulfillment.delivered ?? 0);
+  const refundBacklog = Number(refund.backlog ?? Math.max(0, Number(refund.requested ?? 0) - Number(refund.refunded ?? 0)));
+
+  const paymentOpenRecs = Array.isArray(paymentLane?.recommendations) ? paymentLane.recommendations.length : 0;
+  const paymentOpenProposals = Array.isArray(paymentLane?.proposals) ? paymentLane.proposals.length : 0;
+  const paymentObservationFollowups = Array.isArray(paymentLane?.observationFollowupCandidates) ? paymentLane.observationFollowupCandidates.length : 0;
+
+  const fulfillmentOpenRecs = Array.isArray(fulfillmentLane?.recommendations) ? fulfillmentLane.recommendations.length : 0;
+  const fulfillmentOpenProposals = Array.isArray(fulfillmentLane?.proposals) ? fulfillmentLane.proposals.length : 0;
+  const fulfillmentObservationFollowups = Array.isArray(fulfillmentLane?.observationFollowupCandidates)
+    ? fulfillmentLane.observationFollowupCandidates.length
+    : 0;
+
+  const refundOpenRecs = Array.isArray(refundLane?.recommendations) ? refundLane.recommendations.length : 0;
+
+  const issues = [];
+
+  if (paymentIssues >= 6 || paymentIssueRate >= 0.25) {
+    issues.push({
+      severity: 3,
+      focusArea: "payment",
+      headline: "Payment result governance is degraded",
+      detail: `24h payment issues ${paymentIssues} · issue rate ${(paymentIssueRate * 100).toFixed(1)}%.`,
+      actionHint:
+        paymentObservationFollowups > 0
+          ? "Review payment observation follow-up recommendations and decide the next recovery step."
+          : paymentOpenProposals > 0
+            ? "Review and apply the payment follow-up proposals, then monitor the next payment window."
+            : paymentOpenRecs > 0
+              ? "Approve and apply a payment recovery proposal for the dominant issue, then observe the next window."
+              : "Inspect payment events and provider outcomes; start a recovery proposal if the issue persists.",
+    });
+  } else if (paymentIssues >= 3) {
+    issues.push({
+      severity: 2,
+      focusArea: "payment",
+      headline: "Payment results need attention",
+      detail: `24h payment issues ${paymentIssues} · issue rate ${(paymentIssueRate * 100).toFixed(1)}%.`,
+      actionHint:
+        paymentOpenRecs > 0
+          ? "Review payment issue recommendations and promote the main one into a proposal."
+          : "Monitor payment outcomes and confirm whether the issue keeps accumulating.",
+    });
+  }
+
+  if (fulfillmentProcessing >= 6 && fulfillmentShipped + fulfillmentDelivered === 0) {
+    issues.push({
+      severity: 3,
+      focusArea: "fulfillment",
+      headline: "Fulfillment backlog governance is degraded",
+      detail: `24h processing ${fulfillmentProcessing} · shipped ${fulfillmentShipped} · delivered ${fulfillmentDelivered}.`,
+      actionHint:
+        fulfillmentObservationFollowups > 0
+          ? "Review fulfillment observation follow-up recommendations and coordinate the next ops action."
+          : fulfillmentOpenProposals > 0
+            ? "Review and apply the fulfillment follow-up proposals, then re-check the next 24h fulfillment window."
+            : fulfillmentOpenRecs > 0
+              ? "Approve a fulfillment backlog proposal and coordinate fulfillment operations before backlog grows further."
+              : "Inspect fulfillment processing events and confirm whether warehouse/shipping handoff is stalled.",
+    });
+  } else if (fulfillmentProcessing >= 3 && fulfillmentShipped + fulfillmentDelivered === 0) {
+    issues.push({
+      severity: 2,
+      focusArea: "fulfillment",
+      headline: "Fulfillment backlog needs attention",
+      detail: `24h processing ${fulfillmentProcessing} · shipped ${fulfillmentShipped} · delivered ${fulfillmentDelivered}.`,
+      actionHint:
+        fulfillmentOpenRecs > 0
+          ? "Review fulfillment backlog recommendations and promote the main one into a proposal."
+          : "Monitor fulfillment processing counts and confirm whether shipments resume.",
+    });
+  }
+
+  if (refundBacklog >= 6) {
+    issues.push({
+      severity: 3,
+      focusArea: "refund",
+      headline: "Refund backlog governance is degraded",
+      detail: `24h refund backlog ${refundBacklog}.`,
+      actionHint: refundOpenRecs > 0 ? "Review refund-related recommendations and confirm whether an ops proposal is needed." : "Inspect refund queues and address the backlog before it grows.",
+    });
+  } else if (refundBacklog >= 3) {
+    issues.push({
+      severity: 2,
+      focusArea: "refund",
+      headline: "Refund backlog needs attention",
+      detail: `24h refund backlog ${refundBacklog}.`,
+      actionHint: "Monitor refund throughput and confirm the backlog clears within the next window.",
+    });
+  }
+
+  if (!issues.length) {
+    return {
+      health: "healthy",
+      headline: "Result governance runtime is healthy",
+      detail: "Payment, fulfillment, and refund lanes are within expected ranges for the current 24h window.",
+      focusArea: "healthy",
+      actionHint: "Keep monitoring, and only promote new anomalies into proposals when they persist across windows.",
+    };
+  }
+
+  const maxSeverity = issues.reduce((max, item) => Math.max(max, item.severity), 0);
+  const top = issues.filter((item) => item.severity === maxSeverity);
+  if (top.length === 1) {
+    return {
+      health: maxSeverity >= 3 ? "degraded" : "warning",
+      headline: top[0].headline,
+      detail: top[0].detail,
+      focusArea: top[0].focusArea,
+      actionHint: top[0].actionHint,
+    };
+  }
+
+  return {
+    health: maxSeverity >= 3 ? "degraded" : "warning",
+    headline: "Result governance runtime needs attention across multiple lanes",
+    detail: top
+      .slice(0, 2)
+      .map((item) => item.detail)
+      .join(" "),
+    focusArea: "combined",
+    actionHint: "Start with payment and fulfillment issues that are accumulating, then ensure refund backlog stays controlled.",
+  };
+}
+
+function buildResultGovernanceLaneSummary({ paymentResults24h, fulfillmentResults24h, refundResults24h, workflowSnapshot } = {}) {
+  const payment = paymentResults24h && typeof paymentResults24h === "object" ? paymentResults24h : {};
+  const fulfillment = fulfillmentResults24h && typeof fulfillmentResults24h === "object" ? fulfillmentResults24h : {};
+  const refund = refundResults24h && typeof refundResults24h === "object" ? refundResults24h : {};
+
+  const lanes = workflowSnapshot?.lanes && typeof workflowSnapshot.lanes === "object" ? workflowSnapshot.lanes : {};
+  const paymentLane = lanes.payment ?? null;
+  const fulfillmentLane = lanes.fulfillment ?? null;
+  const refundLane = lanes.refund ?? null;
+
+  const paymentIssues = Number(payment.issues ?? (Number(payment.failed ?? 0) + Number(payment.canceled ?? 0) + Number(payment.requiresAction ?? 0)));
+  const paymentIssueRate = Number(payment.issueRate ?? 0);
+  const fulfillmentProcessing = Number(fulfillment.processing ?? 0);
+  const fulfillmentShipped = Number(fulfillment.shipped ?? 0);
+  const fulfillmentDelivered = Number(fulfillment.delivered ?? 0);
+  const refundBacklog = Number(refund.backlog ?? Math.max(0, Number(refund.requested ?? 0) - Number(refund.refunded ?? 0)));
+
+  const paymentCounts = {
+    recommendations: Array.isArray(paymentLane?.recommendations) ? paymentLane.recommendations.length : 0,
+    proposals: Array.isArray(paymentLane?.proposals) ? paymentLane.proposals.length : 0,
+    observationFollowups: Array.isArray(paymentLane?.observationFollowupCandidates) ? paymentLane.observationFollowupCandidates.length : 0,
+  };
+  const fulfillmentCounts = {
+    recommendations: Array.isArray(fulfillmentLane?.recommendations) ? fulfillmentLane.recommendations.length : 0,
+    proposals: Array.isArray(fulfillmentLane?.proposals) ? fulfillmentLane.proposals.length : 0,
+    observationFollowups: Array.isArray(fulfillmentLane?.observationFollowupCandidates)
+      ? fulfillmentLane.observationFollowupCandidates.length
+      : 0,
+  };
+  const refundCounts = {
+    recommendations: Array.isArray(refundLane?.recommendations) ? refundLane.recommendations.length : 0,
+    proposals: Array.isArray(refundLane?.proposals) ? refundLane.proposals.length : 0,
+    observationFollowups: Array.isArray(refundLane?.observationFollowupCandidates) ? refundLane.observationFollowupCandidates.length : 0,
+  };
+
+  const paymentHealth = paymentIssues >= 6 || paymentIssueRate >= 0.25 ? "degraded" : paymentIssues >= 3 ? "warning" : "healthy";
+  const fulfillmentHealth =
+    fulfillmentProcessing >= 6 && fulfillmentShipped + fulfillmentDelivered === 0
+      ? "degraded"
+      : fulfillmentProcessing >= 3 && fulfillmentShipped + fulfillmentDelivered === 0
+        ? "warning"
+        : "healthy";
+  const refundHealth = refundBacklog >= 6 ? "degraded" : refundBacklog >= 3 ? "warning" : "healthy";
+
+  const paymentLaneSummary = {
+    key: "payment",
+    title: "Payment",
+    health: paymentHealth,
+    headline: paymentHealth === "healthy" ? "Payment lane is healthy" : paymentHealth === "degraded" ? "Payment lane is degraded" : "Payment lane needs attention",
+    detail: `24h issues ${paymentIssues} · issue rate ${(paymentIssueRate * 100).toFixed(1)}%.`,
+    counts: paymentCounts,
+    actionHint:
+      paymentCounts.observationFollowups > 0
+        ? "Review payment observation follow-ups and decide the next recovery step."
+        : paymentCounts.proposals > 0
+          ? "Review and apply the payment follow-up proposals."
+          : paymentCounts.recommendations > 0
+            ? "Promote the dominant payment issue recommendation into a proposal."
+            : "Monitor payment outcomes and confirm whether issues persist.",
+    actionPath: "/ops/support-cases?status=open&q=payment",
+    actionLabel:
+      paymentCounts.observationFollowups > 0 || paymentCounts.proposals > 0 || paymentCounts.recommendations > 0
+        ? "Open payment queue"
+        : "Open payment cases",
+  };
+  const fulfillmentLaneSummary = {
+    key: "fulfillment",
+    title: "Fulfillment",
+    health: fulfillmentHealth,
+    headline:
+      fulfillmentHealth === "healthy"
+        ? "Fulfillment lane is healthy"
+        : fulfillmentHealth === "degraded"
+          ? "Fulfillment lane is degraded"
+          : "Fulfillment lane needs attention",
+    detail: `24h processing ${fulfillmentProcessing} · shipped ${fulfillmentShipped} · delivered ${fulfillmentDelivered}.`,
+    counts: fulfillmentCounts,
+    actionHint:
+      fulfillmentCounts.observationFollowups > 0
+        ? "Review fulfillment observation follow-ups and coordinate the next ops action."
+        : fulfillmentCounts.proposals > 0
+          ? "Review and apply the fulfillment follow-up proposals."
+          : fulfillmentCounts.recommendations > 0
+            ? "Promote the main fulfillment backlog recommendation into a proposal."
+            : "Monitor fulfillment processing and confirm shipments resume.",
+    actionPath: "/ops/support-cases?status=open&q=fulfillment",
+    actionLabel:
+      fulfillmentCounts.observationFollowups > 0 || fulfillmentCounts.proposals > 0 || fulfillmentCounts.recommendations > 0
+        ? "Open fulfillment queue"
+        : "Open fulfillment cases",
+  };
+  const refundLaneSummary = {
+    key: "refund",
+    title: "Refund",
+    health: refundHealth,
+    headline: refundHealth === "healthy" ? "Refund lane is healthy" : refundHealth === "degraded" ? "Refund lane is degraded" : "Refund lane needs attention",
+    detail: `24h backlog ${refundBacklog} · requested ${Number(refund.requested ?? 0)} · refunded ${Number(refund.refunded ?? 0)}.`,
+    counts: refundCounts,
+    actionHint:
+      refundCounts.recommendations > 0
+        ? "Review refund-related recommendations and decide whether an ops proposal is needed."
+        : refundBacklog >= 3
+          ? "Monitor refund throughput and ensure the backlog clears."
+          : "Keep monitoring refund flow; no action needed.",
+    actionPath: "/ops/support-cases?status=open&q=refund",
+    actionLabel: refundCounts.recommendations > 0 || refundBacklog >= 3 ? "Open refund queue" : "Open refund cases",
+  };
+
+  const laneList = [paymentLaneSummary, fulfillmentLaneSummary, refundLaneSummary];
+  const totals = laneList.reduce(
+    (acc, lane) => {
+      acc.recommendations += lane.counts.recommendations;
+      acc.proposals += lane.counts.proposals;
+      acc.observationFollowups += lane.counts.observationFollowups;
+      return acc;
+    },
+    { recommendations: 0, proposals: 0, observationFollowups: 0 },
+  );
+  return { lanes: laneList, totals };
+}
+
+function buildCommerceHealthSummary({ commerceCheckout, weakCheckoutSources, commerceGovernance } = {}) {
+  const checkout = commerceCheckout && typeof commerceCheckout === "object" ? commerceCheckout : {};
+  const weakSources = Array.isArray(weakCheckoutSources) ? weakCheckoutSources : [];
+  const governance = commerceGovernance && typeof commerceGovernance === "object" ? commerceGovernance : {};
+  const starts = Number(checkout.checkoutStarts ?? 0);
+  const completes = Number(checkout.checkoutCompletes ?? 0);
+  const completionRate = Number(checkout.checkoutCompletionRate ?? 0);
+  const weakest = weakSources[0] ?? checkout.bySource?.[0] ?? null;
+  const mainNeedsDecision = Number(governance.counts?.mainNeedsDecision ?? 0);
+  const followupRisk = Number(governance.counts?.followupRisk ?? 0);
+  const observing = Number(governance.counts?.observing ?? 0);
+
+  if (starts === 0) {
+    return {
+      health: "healthy",
+      label: "no recent signal",
+      detail: "No checkout starts were recorded in the current 24h window.",
+      actionHint: "Wait for fresh commerce traffic before judging checkout health.",
+      weakestSource: null,
+    };
+  }
+
+  if ((starts >= 6 && completionRate < 0.35) || followupRisk >= 2) {
+    return {
+      health: "degraded",
+      label: "checkout degraded",
+      detail: `24h completion ${(completionRate * 100).toFixed(1)}% from ${starts} starts and ${completes} completes${weakest?.source ? ` · weakest source ${weakest.source}` : ""}.`,
+      actionHint:
+        followupRisk > 0
+          ? "Review commerce observation follow-up recommendations first, then confirm whether the weakest source keeps regressing."
+          : mainNeedsDecision > 0
+            ? "Promote the weakest checkout source recommendation into a proposal and watch the next window."
+            : "Inspect the weakest checkout source and identify where dropoff is accumulating.",
+      weakestSource: weakest?.source ?? null,
+    };
+  }
+
+  if ((starts >= 3 && completionRate < 0.5) || mainNeedsDecision > 0 || followupRisk > 0) {
+    return {
+      health: "warning",
+      label: "checkout needs attention",
+      detail: `24h completion ${(completionRate * 100).toFixed(1)}% from ${starts} starts and ${completes} completes${weakest?.source ? ` · weakest source ${weakest.source}` : ""}.`,
+      actionHint:
+        mainNeedsDecision > 0
+          ? "Review the open commerce recommendation for the weakest source and decide whether to apply a proposal."
+          : followupRisk > 0
+            ? "Check the commerce follow-up risk items and confirm whether the recent fix is holding."
+            : "Monitor weak checkout sources and confirm whether completion improves in the next window.",
+      weakestSource: weakest?.source ?? null,
+    };
+  }
+
+  return {
+    health: "healthy",
+    label: observing > 0 ? "observing checkout recovery" : "checkout healthy",
+    detail: `24h completion ${(completionRate * 100).toFixed(1)}% from ${starts} starts and ${completes} completes.`,
+    actionHint:
+      observing > 0
+        ? "Keep observing recently applied commerce changes before declaring the journey fully recovered."
+        : "Keep monitoring top checkout sources and only intervene when completion drops again.",
+    weakestSource: weakest?.source ?? null,
+  };
+}
+
+function buildCommerceRuntimeJudgment({ commerceCheckout, weakCheckoutSources, commerceGovernance, commerceHealthSummary } = {}) {
+  const checkout = commerceCheckout && typeof commerceCheckout === "object" ? commerceCheckout : {};
+  const weakSources = Array.isArray(weakCheckoutSources) ? weakCheckoutSources : [];
+  const governance = commerceGovernance && typeof commerceGovernance === "object" ? commerceGovernance : {};
+  const healthSummary = commerceHealthSummary && typeof commerceHealthSummary === "object" ? commerceHealthSummary : {};
+  const weakest = weakSources[0] ?? checkout.bySource?.[0] ?? null;
+  const mainNeedsDecision = Number(governance.counts?.mainNeedsDecision ?? 0);
+  const followupRisk = Number(governance.counts?.followupRisk ?? 0);
+  const observing = Number(governance.counts?.observing ?? 0);
+
+  if (healthSummary.health === "degraded") {
+    return {
+      health: "degraded",
+      headline: "Commerce checkout runtime is degraded",
+      detail:
+        weakSources.length > 1
+          ? `Multiple sources are underperforming. Weakest source ${weakest?.source ?? "n/a"} is dragging completion down.`
+          : `Checkout completion is weak${weakest?.source ? `, led by source ${weakest.source}` : ""}.`,
+      focusArea: weakest?.source ?? "checkout",
+      actionHint: String(healthSummary.actionHint || "Investigate the weakest checkout source and apply the next commerce fix."),
+    };
+  }
+
+  if (healthSummary.health === "warning") {
+    return {
+      health: "warning",
+      headline: followupRisk > 0 ? "Commerce journey follow-up is still risky" : "Commerce checkout needs attention",
+      detail:
+        followupRisk > 0
+          ? "A recently applied commerce change is still showing risk in the current observation window."
+          : `Checkout completion is below the preferred range${weakest?.source ? `, especially for source ${weakest.source}` : ""}.`,
+      focusArea: weakest?.source ?? "checkout",
+      actionHint:
+        followupRisk > 0
+          ? "Start with the commerce follow-up risk items, then verify whether the weakest source still needs a fresh proposal."
+          : String(healthSummary.actionHint || "Review the weakest source recommendation and decide the next journey fix."),
+    };
+  }
+
+  return {
+    health: "healthy",
+    headline: observing > 0 ? "Commerce checkout is stable and under observation" : "Commerce checkout runtime is healthy",
+    detail:
+      observing > 0
+        ? "Recently applied commerce changes are in observation and current checkout signals remain within range."
+        : "Checkout sources and completion are within the expected range for the current 24h window.",
+    focusArea: weakest?.source ?? "healthy",
+    actionHint: String(healthSummary.actionHint || "Keep monitoring checkout sources and only intervene when a source weakens again."),
+  };
+}
+
+function buildCommerceSourceSummary({ commerceCheckout, commerceRecommendations, commerceProposals } = {}) {
+  const checkout = commerceCheckout && typeof commerceCheckout === "object" ? commerceCheckout : {};
+  const bySource = Array.isArray(checkout.bySource) ? checkout.bySource : [];
+  const recommendations = Array.isArray(commerceRecommendations) ? commerceRecommendations : [];
+  const proposals = Array.isArray(commerceProposals) ? commerceProposals : [];
+
+  const sourceItems = bySource
+    .slice()
+    .sort((a, b) => {
+      const rateDelta = Number(a?.checkoutCompletionRate ?? 0) - Number(b?.checkoutCompletionRate ?? 0);
+      if (rateDelta !== 0) return rateDelta;
+      return Number(b?.checkoutStarts ?? 0) - Number(a?.checkoutStarts ?? 0);
+    })
+    .slice(0, 6)
+    .map((item) => {
+      const source = String(item?.source || "unknown");
+      const openRecommendations = recommendations.filter((rec) => String(rec?.context?.sourceKey || rec?.targetId || "") === source);
+      const followupRecommendations = openRecommendations.filter((rec) => rec?.ruleId === "checkout-completion-observation-followup");
+      const openProposals = proposals.filter((proposal) => String(proposal?.targetId || "") === source);
+      const starts = Number(item?.checkoutStarts ?? 0);
+      const completes = Number(item?.checkoutCompletes ?? 0);
+      const dropoff = Number(item?.checkoutDropoff ?? 0);
+      const completionRate = Number(item?.checkoutCompletionRate ?? 0);
+      const purchases24h = Number(item?.purchases24h ?? 0);
+
+      const health =
+        (starts >= 6 && completionRate < 0.35) || followupRecommendations.length >= 1
+          ? "degraded"
+          : (starts >= 3 && completionRate < 0.5) || openRecommendations.length >= 1 || openProposals.length >= 1
+            ? "warning"
+            : "healthy";
+
+      return {
+        key: source,
+        source,
+        health,
+        headline:
+          health === "healthy"
+            ? `${source} is stable`
+            : health === "degraded"
+              ? `${source} is dragging checkout completion`
+              : `${source} needs attention`,
+        detail: `starts ${starts} · completes ${completes} · dropoff ${dropoff} · completion ${(completionRate * 100).toFixed(1)}% · purchases ${purchases24h}`,
+        counts: {
+          recommendations: openRecommendations.length,
+          proposals: openProposals.length,
+          followupRisk: followupRecommendations.length,
+        },
+        actionHint:
+          followupRecommendations.length > 0
+            ? "Review follow-up risk items for this source before declaring the recent fix successful."
+            : openProposals.length > 0
+              ? "Review the active commerce proposal for this source and confirm whether it should be applied or observed."
+              : openRecommendations.length > 0
+                ? "Review the weak-source recommendation and decide whether to promote it into a proposal."
+                : "Keep monitoring this source unless completion drops further.",
+        actionPath: `/ops?status=open,in_progress&q=${encodeURIComponent(source)}`,
+        actionLabel:
+          followupRecommendations.length > 0
+            ? "Open follow-up items"
+            : openProposals.length > 0
+              ? "Open source proposals"
+              : openRecommendations.length > 0
+                ? "Open source recommendations"
+                : "Open source view",
+      };
+    });
+
+  const totals = sourceItems.reduce(
+    (acc, item) => {
+      acc.recommendations += item.counts.recommendations;
+      acc.proposals += item.counts.proposals;
+      acc.followupRisk += item.counts.followupRisk;
+      return acc;
+    },
+    { recommendations: 0, proposals: 0, followupRisk: 0 },
+  );
+
+  return {
+    sources: sourceItems,
+    totals,
+  };
+}
+
+function buildTopLevelGovernanceOverview({
+  seoRuntimeJudgment,
+  seoSyncRecoveryReview,
+  resultGovernanceRuntimeJudgment,
+  resultGovernanceLaneSummary,
+  commerceRuntimeJudgment,
+  commerceHealthSummary,
+  commerceSourceSummary,
+} = {}) {
+  const rank = (health) => {
+    if (health === "degraded") return 3;
+    if (health === "warning") return 2;
+    return 1;
+  };
+
+  const seoLine = {
+    key: "seo",
+    title: "SEO",
+    health: seoRuntimeJudgment?.health ?? "healthy",
+    headline: seoRuntimeJudgment?.headline ?? "SEO runtime is healthy",
+    detail: seoRuntimeJudgment?.detail ?? "SEO monitoring is within the expected range.",
+    actionHint:
+      seoRuntimeJudgment?.actionHint ??
+      (seoSyncRecoveryReview?.status && seoSyncRecoveryReview.status !== "not_applicable"
+        ? seoSyncRecoveryReview.detail
+        : "Keep monitoring Search Console sync and freshness."),
+    actionPath: "/ops/audit/seo-sync",
+    actionLabel: "Open SEO audit",
+    supportingCount:
+      Number(seoSyncRecoveryReview?.status && ["still_failing", "regressed"].includes(seoSyncRecoveryReview.status) ? 1 : 0),
+  };
+
+  const resultLine = {
+    key: "result_governance",
+    title: "Result governance",
+    health: resultGovernanceRuntimeJudgment?.health ?? "healthy",
+    headline: resultGovernanceRuntimeJudgment?.headline ?? "Result governance is healthy",
+    detail: resultGovernanceRuntimeJudgment?.detail ?? "Payment, fulfillment, and refund lanes are stable.",
+    actionHint: resultGovernanceRuntimeJudgment?.actionHint ?? "Keep monitoring payment, fulfillment, and refund lanes.",
+    actionPath: "/ops/audit/result-governance",
+    actionLabel: "Open governance audit",
+    supportingCount: Number(resultGovernanceLaneSummary?.totals?.observationFollowups ?? 0) + Number(resultGovernanceLaneSummary?.totals?.proposals ?? 0),
+  };
+
+  const commerceLine = {
+    key: "commerce",
+    title: "Commerce",
+    health: commerceRuntimeJudgment?.health ?? "healthy",
+    headline: commerceRuntimeJudgment?.headline ?? "Commerce runtime is healthy",
+    detail: commerceRuntimeJudgment?.detail ?? commerceHealthSummary?.detail ?? "Checkout sources are within range.",
+    actionHint: commerceRuntimeJudgment?.actionHint ?? commerceHealthSummary?.actionHint ?? "Keep monitoring checkout sources.",
+    actionPath: "/ops/audit/commerce",
+    actionLabel: "Open commerce audit",
+    supportingCount: Number(commerceSourceSummary?.totals?.followupRisk ?? 0) + Number(commerceSourceSummary?.totals?.proposals ?? 0),
+  };
+
+  const lines = [seoLine, resultLine, commerceLine];
+  const primaryLine = lines
+    .slice()
+    .sort((a, b) => {
+      const healthDelta = rank(b.health) - rank(a.health);
+      if (healthDelta !== 0) return healthDelta;
+      return Number(b.supportingCount ?? 0) - Number(a.supportingCount ?? 0);
+    })[0];
+
+  const overviewHealth = primaryLine?.health ?? "healthy";
+  if (overviewHealth === "healthy") {
+    return {
+      health: "healthy",
+      headline: "Top-level governance is healthy",
+      detail: "SEO, result governance, and commerce are all within the expected range right now.",
+      primaryLine: primaryLine?.key ?? "seo",
+      actionHint: "Start with routine monitoring and only drill into a line when its local judgment weakens.",
+      lines,
+    };
+  }
+
+  return {
+    health: overviewHealth,
+    headline:
+      overviewHealth === "degraded"
+        ? `${primaryLine.title} needs attention first`
+        : `${primaryLine.title} should be reviewed first`,
+    detail: `${primaryLine.headline}. ${primaryLine.detail}`,
+    primaryLine: primaryLine.key,
+    actionHint: primaryLine.actionHint,
+    lines,
+  };
+}
+
+function buildGrowthLoopOverview({
+  seoPerformance,
+  seoRuntimeJudgment,
+  commerceCheckout,
+  commerceRuntimeJudgment,
+  commerceSourceSummary,
+  purchase,
+  governanceOverview,
+} = {}) {
+  const targets = Array.isArray(seoPerformance?.targets) ? seoPerformance.targets : [];
+  const seoTrackedTargets = targets.length;
+  const seoLowCtrCount = targets.filter((t) => Number(t?.summary?.current?.impressions ?? 0) >= 80 && Number(t?.summary?.current?.ctr ?? 0) < 0.02).length;
+  const seoPositionDropCount = targets.filter((t) => Number(t?.summary?.delta?.position ?? 0) > 3 && Number(t?.summary?.current?.impressions ?? 0) >= 50).length;
+
+  const starts = Number(commerceCheckout?.checkoutStarts ?? 0);
+  const completes = Number(commerceCheckout?.checkoutCompletes ?? 0);
+  const purchases24h = Number(commerceCheckout?.purchases24h ?? 0);
+  const completionRate = Number(commerceCheckout?.checkoutCompletionRate ?? 0);
+  const weakSources = Array.isArray(commerceSourceSummary?.sources)
+    ? commerceSourceSummary.sources.filter((item) => item.health !== "healthy").length
+    : 0;
+
+  const purchaseMisaligned = Number(purchase?.misalignedTargetsCount ?? 0);
+
+  let health = "healthy";
+  let headline = "Growth loop looks healthy";
+  let detail = `SEO visibility, commerce conversion, and purchase reconciliation are within the expected range.`;
+  let actionHint = "Keep monitoring cross-line changes and only intervene when visibility, conversion, or reconciliation weakens together.";
+
+  if (
+    String(governanceOverview?.health || "healthy") === "degraded" ||
+    (seoLowCtrCount >= 3 && weakSources >= 1) ||
+    (completionRate < 0.35 && starts >= 6) ||
+    purchaseMisaligned >= 3
+  ) {
+    health = "degraded";
+    headline = "Growth loop needs attention";
+    detail = `Visibility → conversion → result signals are not lining up cleanly right now. SEO weak targets ${seoLowCtrCount}, weak commerce sources ${weakSources}, purchase gaps ${purchaseMisaligned}.`;
+    actionHint =
+      weakSources > 0
+        ? "Start with the weakest commerce source, then confirm whether SEO/content signals are sending qualified traffic into checkout."
+        : purchaseMisaligned > 0
+          ? "Start with purchase reconciliation gaps and confirm whether conversion improvements are turning into real purchases."
+          : "Start with the top SEO/runtime issue, then verify whether commerce conversion recovers after traffic quality improves.";
+  } else if (
+    String(governanceOverview?.health || "healthy") === "warning" ||
+    seoLowCtrCount > 0 ||
+    weakSources > 0 ||
+    purchaseMisaligned > 0
+  ) {
+    health = "warning";
+    headline = "Growth loop should be reviewed";
+    detail = `Some parts of the traffic → conversion → purchase chain are soft. SEO weak targets ${seoLowCtrCount}, weak commerce sources ${weakSources}, purchase gaps ${purchaseMisaligned}.`;
+    actionHint =
+      weakSources > 0
+        ? "Review the weakest source first and confirm whether recent content or funnel changes are helping checkout completion."
+        : purchaseMisaligned > 0
+          ? "Review purchase gaps and make sure conversion changes are reflected in the purchase snapshots."
+          : "Review SEO weak targets and confirm whether search visibility improvements are feeding healthier conversion sources.";
+  }
+
+  return {
+    health,
+    headline,
+    detail,
+    actionHint,
+    metrics: {
+      seoTrackedTargets,
+      seoLowCtrCount,
+      seoPositionDropCount,
+      checkoutStarts: starts,
+      checkoutCompletes: completes,
+      purchases24h,
+      weakSources,
+      purchaseMisalignedTargets: purchaseMisaligned,
+    },
+    lines: [
+      {
+        key: "traffic",
+        title: "Traffic",
+        status: seoRuntimeJudgment?.health ?? "healthy",
+        detail: `tracked SEO targets ${seoTrackedTargets} · low CTR ${seoLowCtrCount} · position drops ${seoPositionDropCount}`,
+      },
+      {
+        key: "conversion",
+        title: "Conversion",
+        status: commerceRuntimeJudgment?.health ?? "healthy",
+        detail: `checkout starts ${starts} · completes ${completes} · completion ${(completionRate * 100).toFixed(1)}% · weak sources ${weakSources}`,
+      },
+      {
+        key: "result",
+        title: "Result",
+        status: purchaseMisaligned >= 3 ? "degraded" : purchaseMisaligned > 0 ? "warning" : "healthy",
+        detail: `purchases 24h ${purchases24h} · reconciliation gaps ${purchaseMisaligned}`,
+      },
+    ],
+  };
+}
+
+function buildGeoOverview({ seoPerformance, seoRuntimeJudgment, aiConcierge, aiConciergeGovernance } = {}) {
+  const targets = Array.isArray(seoPerformance?.targets) ? seoPerformance.targets : [];
+  const seoTrackedTargets = targets.length;
+  const seoLowCtrCount = targets.filter((t) => Number(t?.summary?.current?.impressions ?? 0) >= 80 && Number(t?.summary?.current?.ctr ?? 0) < 0.02).length;
+  const seoPositionDropCount = targets.filter((t) => Number(t?.summary?.delta?.position ?? 0) > 3 && Number(t?.summary?.current?.impressions ?? 0) >= 50).length;
+
+  const funnel = aiConcierge?.funnel && typeof aiConcierge.funnel === "object" ? aiConcierge.funnel : {};
+  const entryViews = Number(funnel.entryViews ?? 0);
+  const entryCtr = Number(funnel.entryCtr ?? 0);
+  const resultsViews = Number(funnel.resultsViews ?? 0);
+  const resultCtr = Number(funnel.resultCtr ?? 0);
+  const attributedProductViews = Number(funnel.attributedProductViews ?? 0);
+  const attributedPurchases = Number(funnel.attributedPurchases ?? 0);
+  const purchaseRateFromView = Number(funnel.purchaseRateFromView ?? 0);
+  const governanceCounts = aiConciergeGovernance?.counts && typeof aiConciergeGovernance.counts === "object" ? aiConciergeGovernance.counts : {};
+  const geoRiskItems =
+    Number(governanceCounts.mainAppliedRisk ?? 0) +
+    Number(governanceCounts.followupManualReview ?? 0) +
+    Number(governanceCounts.followupFixCi ?? 0);
+
+  let health = "healthy";
+  let headline = "GEO signals are healthy";
+  let detail = "Search discoverability and AI-assisted answer/commercial handoff are within the expected range.";
+  let actionHint = "Keep monitoring discoverability, answer engagement, and AI-assisted purchase flow together.";
+
+  if (
+    (entryViews >= 50 && entryCtr < 0.05) ||
+    (resultsViews >= 20 && resultCtr < 0.15) ||
+    (attributedProductViews >= 50 && purchaseRateFromView < 0.01) ||
+    geoRiskItems >= 2
+  ) {
+    health = "degraded";
+    headline = "GEO layer needs attention";
+    detail = `Discoverability or AI-assisted answer quality is not converting cleanly. entry CTR ${(entryCtr * 100).toFixed(1)}% · result CTR ${(resultCtr * 100).toFixed(1)}% · AI purchase/view ${(purchaseRateFromView * 100).toFixed(2)}% · risk items ${geoRiskItems}.`;
+    actionHint =
+      entryViews >= 50 && entryCtr < 0.05
+        ? "Start with AI entry placement/copy, then verify whether stronger answer engagement improves assisted commerce."
+        : resultsViews >= 20 && resultCtr < 0.15
+          ? "Start with answer/result quality and ranking, then verify whether answer clicks improve product handoff."
+          : attributedProductViews >= 50 && purchaseRateFromView < 0.01
+            ? "Start with AI-assisted product handoff and checkout friction, then confirm purchases recover."
+            : "Start with open AI concierge governance risks before pushing more GEO traffic into the funnel.";
+  } else if (
+    seoRuntimeJudgment?.health === "warning" ||
+    seoLowCtrCount > 0 ||
+    geoRiskItems > 0 ||
+    (resultsViews > 0 && resultCtr < 0.2)
+  ) {
+    health = "warning";
+    headline = "GEO signals should be reviewed";
+    detail = `Some GEO inputs are soft. tracked SEO targets ${seoTrackedTargets} · low CTR ${seoLowCtrCount} · result CTR ${(resultCtr * 100).toFixed(1)}% · risk items ${geoRiskItems}.`;
+    actionHint =
+      seoLowCtrCount > 0
+        ? "Review weak discoverability first, then confirm whether AI-assisted answer flow is receiving qualified traffic."
+        : geoRiskItems > 0
+          ? "Review AI concierge governance risks and confirm the latest GEO-facing change is holding."
+          : "Monitor answer engagement and verify it keeps improving with current content/search visibility.";
+  }
+
+  return {
+    health,
+    headline,
+    detail,
+    actionHint,
+    metrics: {
+      seoTrackedTargets,
+      seoLowCtrCount,
+      seoPositionDropCount,
+      entryViews,
+      entryCtr,
+      resultsViews,
+      resultCtr,
+      attributedProductViews,
+      attributedPurchases,
+      purchaseRateFromView,
+      geoRiskItems,
+    },
+    lines: [
+      {
+        key: "discoverability",
+        title: "Discoverability",
+        status: seoRuntimeJudgment?.health ?? "healthy",
+        detail: `tracked targets ${seoTrackedTargets} · low CTR ${seoLowCtrCount} · position drops ${seoPositionDropCount}`,
+      },
+      {
+        key: "answer_quality",
+        title: "Answer quality",
+        status:
+          (entryViews >= 50 && entryCtr < 0.05) || (resultsViews >= 20 && resultCtr < 0.15)
+            ? "degraded"
+            : (resultsViews > 0 && resultCtr < 0.2) || (entryViews > 0 && entryCtr < 0.08)
+              ? "warning"
+              : "healthy",
+        detail: `entry views ${entryViews} · entry CTR ${(entryCtr * 100).toFixed(1)}% · results views ${resultsViews} · result CTR ${(resultCtr * 100).toFixed(1)}%`,
+      },
+      {
+        key: "assisted_commerce",
+        title: "Assisted commerce",
+        status:
+          (attributedProductViews >= 50 && purchaseRateFromView < 0.01) || geoRiskItems >= 2
+            ? "degraded"
+            : attributedProductViews > 0 && (purchaseRateFromView < 0.02 || geoRiskItems > 0)
+              ? "warning"
+              : "healthy",
+        detail: `AI product views ${attributedProductViews} · purchases ${attributedPurchases} · purchase/view ${(purchaseRateFromView * 100).toFixed(2)}% · risks ${geoRiskItems}`,
+      },
+    ],
+  };
+}
+
+function buildGrowthExperimentOverview({ governanceGroups } = {}) {
+  const groups = Array.isArray(governanceGroups) ? governanceGroups : [];
+  const rank = (status) => {
+    if (status === "degraded") return 3;
+    if (status === "warning") return 2;
+    return 1;
+  };
+
+  const groupSummaries = groups.map((group) => {
+    const counts = group?.counts && typeof group.counts === "object" ? group.counts : {};
+    const needsDecision = Number(counts.mainNeedsDecision ?? 0);
+    const observing = Number(counts.observing ?? counts.mainAppliedObserving ?? 0);
+    const followupRisk = Number(counts.followupRisk ?? counts.mainAppliedRisk ?? 0);
+    const recovered = Number(counts.recovered ?? counts.followupSuccess ?? 0);
+
+    const status = followupRisk > 0 ? "degraded" : needsDecision > 0 || observing > 0 ? "warning" : "healthy";
+    return {
+      key: String(group?.key || "unknown"),
+      title: String(group?.title || "Unknown"),
+      status,
+      counts: {
+        needsDecision,
+        observing,
+        followupRisk,
+        recovered,
+      },
+    };
+  });
+
+  const items = [];
+  const formatPct = (value, digits = 1) => `${(Number(value || 0) * 100).toFixed(digits)}%`;
+  const formatDeltaPts = (value, digits = 1) => `${Number(value || 0) >= 0 ? "+" : ""}${(Number(value || 0) * 100).toFixed(digits)}pts`;
+  const buildEffectMetrics = (effect) => {
+    if (!effect || typeof effect !== "object") return [];
+    const mode = String(effect.mode || "");
+    if (mode === "ai_concierge_followup_observation" || mode === "ai_concierge_funnel") {
+      return [
+        {
+          key: "entry_ctr",
+          label: "Δ entry CTR",
+          value: formatDeltaPts(effect?.delta?.entryCtr, 1),
+        },
+        {
+          key: "result_ctr",
+          label: "Δ result CTR",
+          value: formatDeltaPts(effect?.delta?.resultCtr, 1),
+        },
+        {
+          key: "purchase_view",
+          label: "Δ purchase/view",
+          value: formatDeltaPts(effect?.delta?.purchaseRateFromView, 2),
+        },
+      ].filter((item) => item.value !== "+0.00pts");
+    }
+    if (mode === "commerce_checkout_source") {
+      return [
+        {
+          key: "completion",
+          label: "Δ completion",
+          value: formatDeltaPts(effect?.delta?.checkoutCompletionRate, 1),
+        },
+        {
+          key: "purchase_checkout",
+          label: "Δ purchase/checkout",
+          value: formatDeltaPts(effect?.delta?.purchaseRateFromCheckout, 2),
+        },
+        {
+          key: "post_completion",
+          label: "Post completion",
+          value: formatPct(effect?.post?.funnel?.checkoutCompletionRate, 1),
+        },
+      ];
+    }
+    if (mode === "payment_issue_window") {
+      return [
+        {
+          key: "issue_rate",
+          label: "Δ issue rate",
+          value: formatDeltaPts(effect?.delta?.targetedIssueRate, 1),
+        },
+        {
+          key: "paid_rate",
+          label: "Δ paid rate",
+          value: formatDeltaPts(effect?.delta?.paidRate, 1),
+        },
+        {
+          key: "post_issue_rate",
+          label: "Post issue rate",
+          value: formatPct(effect?.post?.funnel?.targetedIssueRate, 1),
+        },
+      ];
+    }
+    if (mode === "fulfillment_backlog_window") {
+      return [
+        {
+          key: "backlog_rate",
+          label: "Δ backlog",
+          value: formatDeltaPts(effect?.delta?.processingBacklogRate, 1),
+        },
+        {
+          key: "shipped_rate",
+          label: "Δ shipped",
+          value: formatDeltaPts(effect?.delta?.shippedRate, 1),
+        },
+        {
+          key: "delivered_rate",
+          label: "Δ delivered",
+          value: formatDeltaPts(effect?.delta?.deliveredRate, 1),
+        },
+      ];
+    }
+    return [];
+  };
+  groups.forEach((group) => {
+    const groupKey = String(group?.key || "unknown");
+    const groupTitle = String(group?.title || "Unknown");
+    const top = group?.top && typeof group.top === "object" ? group.top : {};
+    const pushItems = (kind, list) => {
+      if (!Array.isArray(list)) return;
+      list.slice(0, 3).forEach((entry) => {
+        const status = String(entry?.status || "");
+        const isProposal = ["draft", "approved", "applied"].includes(status);
+        const source = entry?.source ? String(entry.source) : "";
+        let actionPath = "/ops?status=open,in_progress";
+        let actionLabel = "Open queue";
+        if (isProposal && entry?.id) {
+          actionPath = `/ops/proposals/${entry.id}`;
+          actionLabel = "Open proposal";
+        } else if (groupKey === "commerce_checkout" && source) {
+          actionPath = `/ops/audit/commerce?source=${encodeURIComponent(source)}`;
+          actionLabel = "Open commerce audit";
+        } else if (groupKey === "payment_recovery" && source) {
+          actionPath = `/ops/audit/result-governance?lane=payment&q=${encodeURIComponent(source)}`;
+          actionLabel = "Open governance audit";
+        } else if (groupKey === "ai_concierge") {
+          actionPath = source ? `/ops?status=open,in_progress&q=${encodeURIComponent(source)}` : "/ops/monitoring";
+          actionLabel = source ? "Open queue" : "Open monitoring";
+        } else if (source) {
+          actionPath = `/ops?status=open,in_progress&q=${encodeURIComponent(source)}`;
+          actionLabel = "Open queue";
+        }
+        const headline = String(entry?.headline || entry?.reason || entry?.summary || entry?.ruleId || "work item");
+        const effectStateRaw = typeof entry?.state === "string" ? entry.state : null;
+        const effectState =
+          effectStateRaw && ["success", "risk", "observe", "steady", "failure"].includes(effectStateRaw) ? effectStateRaw : null;
+        const rawSignals = Array.isArray(entry?.signals) ? entry.signals : [];
+        const effectSignals = rawSignals
+          .filter((s) => typeof s === "string" && (s.includes("delta") || s.includes("→")))
+          .slice(0, 2);
+        const effectSummary = effectSignals.length ? effectSignals.join(" | ") : null;
+        const effectMetrics = buildEffectMetrics(entry?.postApplyEffect);
+        items.push({
+          groupKey,
+          groupTitle,
+          kind,
+          id: entry?.id ?? null,
+          headline,
+          status: status || (isProposal ? "draft" : "open"),
+          actionPath,
+          actionLabel,
+          targetType: isProposal
+            ? "proposal"
+            : groupKey === "commerce_checkout"
+              ? "commerce_source"
+              : groupKey === "payment_recovery"
+                ? "result_governance_lane"
+                : groupKey === "ai_concierge"
+                  ? "ai_concierge_item"
+                  : "queue_item",
+          targetId: isProposal ? String(entry?.id || "") || null : source || String(entry?.id || "") || null,
+          targetLabel: isProposal ? headline : source || headline,
+          targetMeta: source ? { source } : null,
+          automationArtifact:
+            groupKey === "ai_concierge" && entry?.id
+              ? {
+                  kind: entry?.prUrl ? "draft_pr" : "proposal",
+                  id: String(entry.id),
+                  status: String(entry?.status || "draft"),
+                  label: headline,
+                  actionPath: `/ops/proposals/${entry.id}`,
+                  actionLabel: entry?.prUrl ? "Open draft proposal" : "Open proposal",
+                  repoChangeId: entry?.repoChangeId ? String(entry.repoChangeId) : entry?.followupExecution?.repoChangeId ? String(entry.followupExecution.repoChangeId) : null,
+                  repoChangeStatus:
+                    entry?.followupExecution?.state === "repo_ci_running"
+                      ? "ci_running"
+                      : entry?.followupExecution?.state === "repo_ci_failed"
+                        ? "ci_failed"
+                        : entry?.followupExecution?.state === "repo_review"
+                          ? "merge_candidate"
+                          : entry?.followupExecution?.state === "repo_merged"
+                            ? "merged"
+                            : entry?.followupExecution?.state === "repo_draft"
+                              ? "merge_candidate"
+                              : entry?.followupExecution?.state === "repo_pending_pr"
+                                ? "draft"
+                                : null,
+                  repoNextStepCode: entry?.followupExecution?.recommendedNextStep?.code ?? null,
+                  repoNextStepLabel: entry?.followupExecution?.recommendedNextStep?.label ?? null,
+                }
+              : null,
+          effectState,
+          effectSummary,
+          effectMetrics,
+        });
+      });
+    };
+
+    pushItems("followup_risk", top.followupRisk);
+    pushItems("needs_decision", top.mainNeedsDecision);
+    pushItems("observing", top.observing);
+  });
+
+  const totals = groupSummaries.reduce(
+    (acc, g) => {
+      acc.needsDecision += g.counts.needsDecision;
+      acc.observing += g.counts.observing;
+      acc.followupRisk += g.counts.followupRisk;
+      acc.recovered += g.counts.recovered;
+      return acc;
+    },
+    { needsDecision: 0, observing: 0, followupRisk: 0, recovered: 0 },
+  );
+
+  const sortedGroups = groupSummaries
+    .slice()
+    .sort((a, b) => {
+      const delta = rank(b.status) - rank(a.status);
+      if (delta !== 0) return delta;
+      return b.counts.followupRisk - a.counts.followupRisk || b.counts.needsDecision - a.counts.needsDecision;
+    });
+  const primary = sortedGroups[0] ?? null;
+
+  const health = totals.followupRisk > 0 ? "degraded" : totals.needsDecision > 0 || totals.observing > 0 ? "warning" : "healthy";
+  const headline =
+    health === "healthy"
+      ? "Experiment queue is clear"
+      : health === "degraded"
+        ? "Experiment follow-ups need attention"
+        : "Experiment queue needs review";
+  const detail = `needs decision ${totals.needsDecision} · observing ${totals.observing} · followup risk ${totals.followupRisk} · recovered ${totals.recovered}`;
+  const actionHint =
+    health === "healthy"
+      ? "Keep monitoring; no pending experiment decisions right now."
+      : primary
+        ? `Start with ${primary.title}: resolve follow-up risk first, then decide the next proposal.`
+        : "Start with follow-up risks first, then decide the next proposals.";
+
+  return {
+    health,
+    headline,
+    detail,
+    actionHint,
+    totals,
+    groups: sortedGroups,
+    items: items.slice(0, 9),
+  };
+}
+
+function buildTodaysBestBet({
+  governanceOverview,
+  growthLoopOverview,
+  geoOverview,
+  growthExperimentOverview,
+  commerceSourceSummary,
+  commerceProposals,
+} = {}) {
+  const autoActionPolicy = getAutoActionPolicy();
+  const rank = (health) => {
+    if (health === "degraded") return 3;
+    if (health === "warning") return 2;
+    return 1;
+  };
+
+  const experimentItems = Array.isArray(growthExperimentOverview?.items) ? growthExperimentOverview.items : [];
+  const prioritizedExperiment = experimentItems
+    .slice()
+    .sort((a, b) => {
+      const aRisk = a.kind === "followup_risk" ? 3 : a.kind === "needs_decision" ? 2 : 1;
+      const bRisk = b.kind === "followup_risk" ? 3 : b.kind === "needs_decision" ? 2 : 1;
+      return bRisk - aRisk;
+    })[0] ?? null;
+  const prioritizedGeoItem = experimentItems
+    .filter((item) => item.groupKey === "ai_concierge")
+    .slice()
+    .sort((a, b) => {
+      const aRisk = a.kind === "followup_risk" ? 3 : a.kind === "needs_decision" ? 2 : 1;
+      const bRisk = b.kind === "followup_risk" ? 3 : b.kind === "needs_decision" ? 2 : 1;
+      return bRisk - aRisk;
+    })[0] ?? null;
+  const weakestCommerceSource = (Array.isArray(commerceSourceSummary?.sources) ? commerceSourceSummary.sources : [])
+    .slice()
+    .sort((a, b) => {
+      const score = (item) => (item?.health === "degraded" ? 3 : item?.health === "warning" ? 2 : 1);
+      return score(b) - score(a);
+    })[0] ?? null;
+  const buildCommerceProposalArtifact = (source) => {
+    if (!source) return null;
+    const proposals = Array.isArray(commerceProposals) ? commerceProposals : [];
+    const match = proposals
+      .filter((item) => String(item?.targetId || "") === String(source))
+      .slice()
+      .sort((a, b) => String(b?.createdAt || "").localeCompare(String(a?.createdAt || "")))[0];
+    if (!match?.id) return null;
+    return {
+      kind: "proposal",
+      id: String(match.id),
+      status: String(match.status || "draft"),
+      label: String(match.reviewSummary?.headline || match.summary || `Proposal for ${source}`),
+      actionPath: `/ops/proposals/${match.id}`,
+      actionLabel: "Open auto draft",
+    };
+  };
+  const weakestCommerceProposalArtifact = buildCommerceProposalArtifact(weakestCommerceSource?.source ?? null);
+  const governancePrimaryLine =
+    Array.isArray(governanceOverview?.lines) && governanceOverview?.primaryLine
+      ? governanceOverview.lines.find((line) => line.key === governanceOverview.primaryLine) ?? null
+      : null;
+  const weakestGrowthLoopLine = (Array.isArray(growthLoopOverview?.lines) ? growthLoopOverview.lines : [])
+    .slice()
+    .sort((a, b) => {
+      const score = (item) => (item?.status === "degraded" ? 3 : item?.status === "warning" ? 2 : 1);
+      return score(b) - score(a);
+    })[0] ?? null;
+
+  const buildAutomationEligibility = ({ source, targetType, targetId, targetMeta } = {}) => {
+    const targetIdString = targetId == null ? "" : String(targetId);
+    const targetTypeString = targetType == null ? "" : String(targetType);
+    const meta = targetMeta && typeof targetMeta === "object" ? targetMeta : {};
+
+    if (source === "governance" || targetTypeString === "audit_line" || targetTypeString === "result_governance_lane") {
+      return {
+        automationEligibility: "manual_only",
+        automationReason: "This path can affect cross-line governance or recovery policy, so it should stay manual-first.",
+      };
+    }
+
+    if (source === "growth_loop" && targetTypeString === "commerce_source") {
+      return {
+        automationEligibility: "auto_proposal_candidate",
+        automationReason: `Weak source ${String(meta.source || targetIdString || "unknown")} is repetitive enough to auto-prepare a proposal candidate, but it should still be reviewed before apply.`,
+      };
+    }
+
+    if (source === "geo" || targetTypeString === "ai_concierge_item") {
+      return {
+        automationEligibility: "auto_draft",
+        automationReason:
+          "AI concierge tuning already has a draft-oriented workflow, so the next safe step is auto-draft rather than direct apply.",
+      };
+    }
+
+    if (source === "experiment" && targetTypeString === "proposal") {
+      const repoPolicyEnabled = Boolean(autoActionPolicy?.autoMerge?.enabled || autoActionPolicy?.autoRevert?.enabled);
+      return {
+        automationEligibility: "auto_proposal_candidate",
+        automationReason: repoPolicyEnabled
+          ? "A proposal exists and repo auto-actions are enabled for later stages, so this item is a good proposal candidate with human review."
+          : "A proposal exists, but later execution still needs human review, so keep it at proposal-candidate level.",
+      };
+    }
+
+    if (source === "experiment" || targetTypeString === "queue_item" || targetTypeString === "proposal") {
+      return {
+        automationEligibility: "auto_draft",
+        automationReason: "This item is structured enough for auto-draft preparation, but it still needs a human decision before rollout.",
+      };
+    }
+
+    return {
+      automationEligibility: "manual_only",
+      automationReason: "This suggestion still needs manual review before the system should automate the next step.",
+    };
+  };
+
+  const candidates = [
+    governanceOverview
+      ? {
+          key: "governance",
+          health: governanceOverview.health,
+          headline: governanceOverview.headline,
+          reason: governanceOverview.detail,
+          actionHint: governanceOverview.actionHint,
+          actionPath:
+            governancePrimaryLine?.actionPath ??
+            "/ops/monitoring",
+          actionLabel:
+            governancePrimaryLine?.actionLabel ??
+            "Open overview",
+          expectedImpact: "Reduce the highest-priority governance risk before it spills into other lines.",
+          targetType: "audit_line",
+          targetId: governancePrimaryLine?.key ?? governanceOverview.primaryLine ?? null,
+          targetLabel: governancePrimaryLine?.title ?? governanceOverview.primaryLine ?? "Governance overview",
+          targetMeta: governancePrimaryLine ? { lineKey: governancePrimaryLine.key } : null,
+          ...buildAutomationEligibility({
+            source: "governance",
+            targetType: "audit_line",
+            targetId: governancePrimaryLine?.key ?? governanceOverview.primaryLine ?? null,
+            targetMeta: governancePrimaryLine ? { lineKey: governancePrimaryLine.key } : null,
+          }),
+        }
+      : null,
+    growthLoopOverview
+      ? {
+          key: "growth_loop",
+          health: growthLoopOverview.health,
+          headline: growthLoopOverview.headline,
+          reason: growthLoopOverview.detail,
+          actionHint: growthLoopOverview.actionHint,
+          actionPath:
+            weakestGrowthLoopLine?.key === "conversion" && weakestCommerceSource?.source
+              ? weakestCommerceProposalArtifact?.actionPath ?? `/ops/audit/commerce?source=${encodeURIComponent(weakestCommerceSource.source)}`
+              : weakestGrowthLoopLine?.key === "traffic"
+                ? "/ops/audit/seo-sync"
+                : weakestGrowthLoopLine?.key === "result"
+                  ? "/ops/audit/result-governance"
+                  : "/ops/monitoring",
+          actionLabel:
+            weakestGrowthLoopLine?.key === "conversion"
+              ? weakestCommerceProposalArtifact?.actionLabel ?? "Open commerce audit"
+              : weakestGrowthLoopLine?.key === "traffic"
+                ? "Open SEO audit"
+                : weakestGrowthLoopLine?.key === "result"
+                  ? "Open governance audit"
+                  : "Open monitoring",
+          expectedImpact: "Tighten the traffic → conversion → result chain and stop losses from compounding.",
+          targetType:
+            weakestGrowthLoopLine?.key === "conversion" && weakestCommerceSource?.source
+              ? "commerce_source"
+              : weakestGrowthLoopLine?.key === "traffic"
+                ? "growth_segment"
+                : weakestGrowthLoopLine?.key === "result"
+                  ? "result_governance_lane"
+                  : "growth_segment",
+          targetId:
+            weakestGrowthLoopLine?.key === "conversion" && weakestCommerceSource?.source
+              ? weakestCommerceSource.source
+              : weakestGrowthLoopLine?.key ?? "growth_loop",
+          targetLabel:
+            weakestGrowthLoopLine?.key === "conversion" && weakestCommerceSource?.source
+              ? weakestCommerceSource.source
+              : weakestGrowthLoopLine?.title ?? "Growth loop",
+          targetMeta:
+            weakestGrowthLoopLine?.key === "conversion" && weakestCommerceSource?.source
+              ? { source: weakestCommerceSource.source, segment: "conversion" }
+              : weakestGrowthLoopLine?.key
+                ? { segment: weakestGrowthLoopLine.key }
+                : null,
+          ...buildAutomationEligibility({
+            source: "growth_loop",
+            targetType:
+              weakestGrowthLoopLine?.key === "conversion" && weakestCommerceSource?.source
+                ? "commerce_source"
+                : weakestGrowthLoopLine?.key === "traffic"
+                  ? "growth_segment"
+                  : weakestGrowthLoopLine?.key === "result"
+                    ? "result_governance_lane"
+                    : "growth_segment",
+            targetId:
+              weakestGrowthLoopLine?.key === "conversion" && weakestCommerceSource?.source
+                ? weakestCommerceSource.source
+                : weakestGrowthLoopLine?.key ?? "growth_loop",
+            targetMeta:
+              weakestGrowthLoopLine?.key === "conversion" && weakestCommerceSource?.source
+                ? { source: weakestCommerceSource.source, segment: "conversion" }
+                : weakestGrowthLoopLine?.key
+                  ? { segment: weakestGrowthLoopLine.key }
+                  : null,
+          }),
+          automationArtifact:
+            weakestGrowthLoopLine?.key === "conversion" && weakestCommerceSource?.source ? weakestCommerceProposalArtifact : null,
+          automationReason:
+            weakestGrowthLoopLine?.key === "conversion" && weakestCommerceProposalArtifact
+              ? `A draft proposal is already prepared for weakest source ${weakestCommerceSource.source}; review it before apply.`
+              : undefined,
+        }
+      : null,
+    geoOverview
+      ? {
+          key: "geo",
+          health: geoOverview.health,
+          headline: geoOverview.headline,
+          reason: geoOverview.detail,
+          actionHint: geoOverview.actionHint,
+          actionPath: prioritizedGeoItem?.automationArtifact?.actionPath ?? prioritizedGeoItem?.actionPath ?? "/ops/monitoring",
+          actionLabel: prioritizedGeoItem?.automationArtifact?.actionLabel ?? prioritizedGeoItem?.actionLabel ?? "Open GEO overview",
+          expectedImpact: "Improve discoverability and AI-assisted handoff quality before more top-funnel traffic is lost.",
+          targetType: prioritizedGeoItem?.targetType ?? "geo_overview",
+          targetId: prioritizedGeoItem?.targetId ?? "geo",
+          targetLabel: prioritizedGeoItem?.targetLabel ?? "GEO overview",
+          targetMeta: prioritizedGeoItem?.targetMeta ?? null,
+          ...buildAutomationEligibility({
+            source: "geo",
+            targetType: prioritizedGeoItem?.targetType ?? "geo_overview",
+            targetId: prioritizedGeoItem?.targetId ?? "geo",
+            targetMeta: prioritizedGeoItem?.targetMeta ?? null,
+          }),
+          automationArtifact: prioritizedGeoItem?.automationArtifact ?? null,
+          automationReason:
+            prioritizedGeoItem?.automationArtifact
+              ? `A draft proposal is already prepared for ${prioritizedGeoItem.targetLabel}; review it before rollout.`
+              : undefined,
+        }
+      : null,
+    prioritizedExperiment
+      ? {
+          key: "experiment",
+          health: prioritizedExperiment.effectState === "risk" || prioritizedExperiment.kind === "followup_risk" ? "degraded" : "warning",
+          headline: prioritizedExperiment.headline,
+          reason: `${prioritizedExperiment.groupTitle} has the highest-priority queued action right now.`,
+          actionHint: `Execute or review this item first: ${prioritizedExperiment.headline}.`,
+          actionPath: prioritizedExperiment.actionPath,
+          actionLabel: prioritizedExperiment.actionLabel,
+          expectedImpact:
+            prioritizedExperiment.effectMetrics?.length
+              ? `Clarify whether ${prioritizedExperiment.effectMetrics.map((m) => m.label).join(", ")} are improving in the right direction.`
+              : "Resolve the highest-priority experiment queue item before starting another round of changes.",
+          targetType: prioritizedExperiment.targetType ?? "queue_item",
+          targetId: prioritizedExperiment.targetId ?? prioritizedExperiment.id ?? null,
+          targetLabel: prioritizedExperiment.targetLabel ?? prioritizedExperiment.headline,
+          targetMeta: prioritizedExperiment.targetMeta ?? null,
+          ...buildAutomationEligibility({
+            source: "experiment",
+            targetType: prioritizedExperiment.targetType ?? "queue_item",
+            targetId: prioritizedExperiment.targetId ?? prioritizedExperiment.id ?? null,
+            targetMeta: prioritizedExperiment.targetMeta ?? null,
+          }),
+        }
+      : null,
+  ].filter(Boolean);
+
+  const best = candidates
+    .slice()
+    .sort((a, b) => rank(b.health) - rank(a.health))[0] ?? null;
+
+  if (!best) {
+    return {
+      health: "healthy",
+      headline: "No urgent action today",
+      reason: "All top-level lines are stable and there is no queued experiment risk that needs immediate attention.",
+      actionHint: "Continue routine monitoring and only intervene when one of the overviews weakens.",
+      actionPath: "/ops/monitoring",
+      actionLabel: "Stay on monitoring",
+      expectedImpact: "Preserve the current healthy state.",
+      source: "governance",
+      targetType: "monitoring",
+      targetId: "monitoring",
+      targetLabel: "Monitoring overview",
+      targetMeta: null,
+      automationEligibility: "manual_only",
+      automationReason: "No urgent action is available to automate right now.",
+      automationArtifact: null,
+      promotionEligibility: "manual_review_only",
+      promotionReason: "No urgent automated promotion is available right now.",
+      executionState: "pending",
+      executionReason: "No urgent action is queued right now.",
+      observationStatus: "not_started",
+      observationWindow: "starts after execution",
+      observationMetrics: ["health trend", "follow-up risk", "execution outcome"],
+      observationNextStep: "Keep monitoring until a new bet needs execution.",
+    };
+  }
+
+  const promotion = buildPromotionState({
+    automationEligibility: best.automationEligibility,
+    automationArtifact: best.automationArtifact,
+    targetType: best.targetType,
+  });
+  const promotionAction = buildPromotionAction({
+    promotionEligibility: promotion.promotionEligibility,
+    automationArtifact: best.automationArtifact,
+    actionPath: best.actionPath,
+    targetType: best.targetType,
+    targetLabel: best.targetLabel ?? best.headline,
+  });
+  const execution = buildExecutionState({
+    source: best.key,
+    targetType: best.targetType,
+    health: best.health,
+    effectState: best.effectState ?? null,
+    automationArtifact: best.automationArtifact,
+  });
+  const playbookKey = `${best.key}:${String(best.targetType || "monitoring")}`;
+  const playbook = findPlaybookByKey(playbookKey);
+  const observation = buildObservationHandoff({
+    source: best.key,
+    targetType: best.targetType,
+    targetLabel: best.targetLabel ?? best.headline,
+    executionState: execution.executionState,
+  });
+
+  return {
+    health: best.health,
+    headline: best.health === "healthy" ? "Best bet: keep monitoring" : `Best bet: ${best.headline}`,
+    reason: best.reason,
+    actionHint: best.actionHint,
+    actionPath: best.actionPath,
+    actionLabel: best.actionLabel,
+    expectedImpact: best.expectedImpact,
+    source: best.key,
+    targetType: best.targetType ?? "monitoring",
+    targetId: best.targetId ?? null,
+    targetLabel: best.targetLabel ?? best.headline,
+    targetMeta: best.targetMeta ?? null,
+    automationEligibility: best.automationEligibility ?? "manual_only",
+    automationReason: best.automationReason ?? "This suggestion should stay manual-first.",
+    automationArtifact: best.automationArtifact ?? null,
+    promotionEligibility: promotion.promotionEligibility,
+    promotionReason: promotion.promotionReason,
+    promotionAction,
+    executionState: execution.executionState,
+    executionReason: execution.executionReason,
+    observationStatus: observation.observationStatus,
+    observationWindow: observation.observationWindow,
+    observationMetrics: observation.observationMetrics,
+    observationNextStep: observation.observationNextStep,
+    playbookRef: summarizePlaybookRef(playbook),
+  };
+}
+
+function buildDecisionTimeline({
+  events,
+  todaysBestBet,
+  governanceOverview,
+  growthLoopOverview,
+  geoOverview,
+  growthExperimentOverview,
+} = {}) {
+  const items = Array.isArray(events) ? events : [];
+  const recent = items
+    .slice()
+    .sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))
+    .slice(0, 120);
+
+  const classify = (event) => {
+    const action = String(event?.action || "");
+    const note = String(event?.note || "");
+    const lower = `${action} ${note}`.toLowerCase();
+    if (lower.includes("failed") || lower.includes("risk") || lower.includes("rollback")) return "risk";
+    if (lower.includes("transition") || lower.includes("proposal")) return "decision";
+    if (lower.includes("sync") || lower.includes("merged") || lower.includes("apply")) return "execution";
+    return "signal";
+  };
+
+  const labelForEvent = (event) => {
+    const action = String(event?.action || "");
+    const map = {
+      rule_tuning_proposal: "Rule tuning proposal created",
+      rule_tuning_proposal_transition: "Rule tuning proposal moved",
+      rule_tuning_proposal_followup: "Rule tuning follow-up created",
+      incident_followup_proposal: "Incident follow-up proposal created",
+      incident_followup_proposal_transition: "Incident follow-up moved",
+      seo_metrics_sync_search_console: "Search Console sync succeeded",
+      seo_metrics_sync_search_console_failed: "Search Console sync failed",
+      seo_metrics_sync_search_console_skipped: "Search Console sync skipped",
+      auto_start_recommendation: "Recommendation auto-started",
+    };
+    return map[action] ?? action;
+  };
+
+  const eventItems = recent
+    .filter((event) => {
+      const action = String(event?.action || "");
+      return (
+        action.includes("proposal") ||
+        action.includes("recommendation") ||
+        action.includes("seo_metrics_sync") ||
+        action.includes("rollback") ||
+        action.includes("publish")
+      );
+    })
+    .slice(0, 8)
+    .map((event) => ({
+      at: event.at,
+      kind: classify(event),
+      title: labelForEvent(event),
+      detail: event.note || `${event.action}${event.target?.id ? ` · ${event.target.id}` : ""}`,
+    }));
+
+  const totals = eventItems.reduce(
+    (acc, item) => {
+      acc[item.kind] += 1;
+      return acc;
+    },
+    { decision: 0, execution: 0, risk: 0, signal: 0 },
+  );
+
+  const trend =
+    totals.risk > 0
+      ? "risk_heavy"
+      : totals.decision > totals.execution
+        ? "decision_heavy"
+        : totals.execution > 0
+          ? "execution_heavy"
+          : "steady";
+
+  const summary =
+    trend === "risk_heavy"
+      ? "Recent history is dominated by risk or failure handling."
+      : trend === "decision_heavy"
+        ? "Recent history is dominated by proposal and decision movement."
+        : trend === "execution_heavy"
+          ? "Recent history is dominated by execution and rollout activity."
+          : "Recent history is relatively steady.";
+
+  const currentStory = [
+    todaysBestBet ? `Best bet now: ${todaysBestBet.headline}.` : null,
+    governanceOverview ? `Governance is ${governanceOverview.health}.` : null,
+    growthLoopOverview ? `Growth loop is ${growthLoopOverview.health}.` : null,
+    geoOverview ? `GEO is ${geoOverview.health}.` : null,
+    growthExperimentOverview ? `Experiment queue is ${growthExperimentOverview.health}.` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return {
+    trend,
+    summary,
+    counts: totals,
+    currentStory,
+    items: eventItems,
+  };
+}
+
+function buildPromotionState({
+  automationEligibility,
+  automationArtifact,
+  targetType,
+} = {}) {
+  const eligibility = String(automationEligibility || "manual_only");
+  const artifact = automationArtifact && typeof automationArtifact === "object" ? automationArtifact : null;
+  const artifactStatus = String(artifact?.status || "");
+  const artifactKind = String(artifact?.kind || "");
+  const targetTypeString = String(targetType || "");
+
+  if (eligibility === "manual_only") {
+    return {
+      promotionEligibility: "manual_review_only",
+      promotionReason: "This path should stay manual-first before it can be promoted.",
+    };
+  }
+
+  if (!artifact) {
+    return {
+      promotionEligibility: "draft_missing",
+      promotionReason: "No draft artifact is attached yet, so promotion should wait until the draft is prepared.",
+    };
+  }
+
+  if (artifactKind === "draft_pr") {
+    return {
+      promotionEligibility: "candidate_ready",
+      promotionReason: "A draft PR already exists, so this item is ready to be treated as a proposal candidate after review.",
+    };
+  }
+
+  if (artifactKind === "proposal" && ["draft", "manual_review", "approved", "open"].includes(artifactStatus)) {
+    return {
+      promotionEligibility: "candidate_ready",
+      promotionReason: "A proposal draft already exists, so this item is ready for candidate-level review and promotion.",
+    };
+  }
+
+  if (eligibility === "auto_proposal_candidate") {
+    return {
+      promotionEligibility: "candidate_ready",
+      promotionReason: "This item already satisfies the proposal-candidate automation boundary.",
+    };
+  }
+
+  if (eligibility === "auto_draft" && (targetTypeString === "ai_concierge_item" || targetTypeString === "proposal")) {
+    return {
+      promotionEligibility: "review_after_draft",
+      promotionReason: "The draft is ready, but this path still needs explicit review before candidate promotion.",
+    };
+  }
+
+  return {
+    promotionEligibility: "draft_only",
+    promotionReason: "The system can prepare a draft here, but it is not yet ready for candidate promotion.",
+  };
+}
+
+function buildPromotionAction({
+  promotionEligibility,
+  automationArtifact,
+  actionPath,
+  targetType,
+  targetLabel,
+} = {}) {
+  const eligibility = String(promotionEligibility || "manual_review_only");
+  const artifact = automationArtifact && typeof automationArtifact === "object" ? automationArtifact : null;
+  const targetTypeString = String(targetType || "");
+  const fallbackPath = String(actionPath || "/ops/monitoring");
+  const label = String(targetLabel || "this item");
+
+  if (eligibility === "candidate_ready") {
+    const repoChangeId = artifact?.repoChangeId ? String(artifact.repoChangeId) : "";
+    const repoChangeStatus = artifact?.repoChangeStatus ? String(artifact.repoChangeStatus) : "";
+    const repoNextStepCode = artifact?.repoNextStepCode ? String(artifact.repoNextStepCode) : "";
+    const repoMutation =
+      repoChangeId && (repoChangeStatus === "ci_passed" || repoChangeStatus === "merge_candidate")
+        ? {
+            kind: "repo_change_transition",
+            targetId: repoChangeId,
+            nextStatus: repoChangeStatus === "ci_passed" ? "merge_candidate" : "auto_merge_candidate",
+          }
+        : null;
+    return {
+      code: repoMutation ? "promote_repo_candidate" : "promote_candidate",
+      actionPath: artifact?.actionPath ?? fallbackPath,
+      actionLabel: repoMutation
+        ? repoMutation.nextStatus === "merge_candidate"
+          ? "Promote repo candidate"
+          : "Promote auto-merge candidate"
+        : artifact?.kind === "draft_pr"
+          ? "Promote candidate PR"
+          : "Promote proposal candidate",
+      description: repoMutation
+        ? `Promote ${label} through the repo-change lane${repoNextStepCode ? ` (${repoNextStepCode})` : ""}.`
+        : `This draft is mature enough to promote ${label} into candidate review.`,
+      mutation:
+        repoMutation ??
+        (artifact?.kind === "proposal" && ["draft", "manual_review", "open"].includes(String(artifact?.status || ""))
+          ? {
+              kind: "proposal_transition",
+              targetId: String(artifact.id),
+              nextStatus: "approved",
+            }
+          : null),
+    };
+  }
+
+  if (eligibility === "review_after_draft") {
+    return {
+      code: "review_draft",
+      actionPath: artifact?.actionPath ?? fallbackPath,
+      actionLabel: "Review draft first",
+      description: `Review the prepared draft for ${label} before promoting it further.`,
+      mutation: null,
+    };
+  }
+
+  if (eligibility === "draft_missing") {
+    return {
+      code: "prepare_draft",
+      actionPath: fallbackPath,
+      actionLabel: "Prepare draft",
+      description: `Create or sync the draft artifact for ${label} before promotion.`,
+      mutation: null,
+    };
+  }
+
+  if (eligibility === "draft_only") {
+    return {
+      code: "keep_draft",
+      actionPath: artifact?.actionPath ?? fallbackPath,
+      actionLabel: "Keep draft in review",
+      description: `Keep ${label} in draft mode until stronger evidence supports candidate promotion.`,
+      mutation: null,
+    };
+  }
+
+  return {
+    code: targetTypeString === "audit_line" ? "manual_audit" : "manual_review",
+    actionPath: fallbackPath,
+    actionLabel: targetTypeString === "audit_line" ? "Review manually" : "Keep manual review",
+    description: `This path should stay manual-first for ${label}.`,
+    mutation: null,
+  };
+}
+
+function buildExecutionState({
+  source,
+  targetType,
+  health,
+  effectState,
+  automationArtifact,
+} = {}) {
+  const artifact = automationArtifact && typeof automationArtifact === "object" ? automationArtifact : null;
+  const artifactStatus = String(artifact?.status || "");
+  const repoChangeStatus = String(artifact?.repoChangeStatus || "");
+  const normalizedEffectState = typeof effectState === "string" ? effectState : null;
+  const sourceKey = String(source || "");
+  const targetTypeKey = String(targetType || "");
+  const healthKey = String(health || "");
+
+  if (normalizedEffectState === "success") {
+    return {
+      executionState: "succeeded",
+      executionReason: "Recent post-apply signals are already showing success.",
+    };
+  }
+
+  if (normalizedEffectState === "risk" || repoChangeStatus === "ci_failed") {
+    return {
+      executionState: "returned_to_risk",
+      executionReason: "The last execution path is still risky and needs another corrective step.",
+    };
+  }
+
+  if (normalizedEffectState === "observe" || normalizedEffectState === "steady" || repoChangeStatus === "merged" || artifactStatus === "applied") {
+    return {
+      executionState: "observing",
+      executionReason: "The latest action has been applied and is now in the observation window.",
+    };
+  }
+
+  if (artifact && (sourceKey === "growth_loop" || sourceKey === "geo" || sourceKey === "experiment" || targetTypeKey === "proposal")) {
+    return {
+      executionState: "pending",
+      executionReason: "A draft or candidate artifact exists, but the action has not been executed yet.",
+    };
+  }
+
+  if (healthKey === "degraded") {
+    return {
+      executionState: "returned_to_risk",
+      executionReason: "This area is still degraded, so the bet remains unresolved.",
+    };
+  }
+
+  return {
+    executionState: "pending",
+    executionReason: "This bet is queued and waiting for execution.",
+  };
+}
+
+function buildObservationHandoff({
+  source,
+  targetType,
+  targetLabel,
+  executionState,
+} = {}) {
+  const sourceKey = String(source || "");
+  const targetTypeKey = String(targetType || "");
+  const label = String(targetLabel || "this bet");
+
+  const metricsFor = () => {
+    if (sourceKey === "growth_loop" && targetTypeKey === "commerce_source") {
+      return ["completion rate", "purchase rate", "dropoff"];
+    }
+    if (sourceKey === "growth_loop" && targetTypeKey === "growth_segment") {
+      return ["impressions", "CTR", "qualified traffic"];
+    }
+    if (sourceKey === "growth_loop" && targetTypeKey === "result_governance_lane") {
+      return ["payment recovery", "fulfillment backlog", "refund backlog"];
+    }
+    if (sourceKey === "geo" || targetTypeKey === "ai_concierge_item") {
+      return ["entry CTR", "result CTR", "purchase / view"];
+    }
+    if (sourceKey === "experiment" || targetTypeKey === "proposal" || targetTypeKey === "queue_item") {
+      return ["primary effect metric", "follow-up risk", "candidate movement"];
+    }
+    if (sourceKey === "governance" || targetTypeKey === "audit_line") {
+      return ["alert volume", "open risk items", "recovery backlog"];
+    }
+    return ["health trend", "follow-up risk", "execution outcome"];
+  };
+
+  const metrics = metricsFor();
+  const state = String(executionState || "pending");
+
+  if (state === "executed") {
+    return {
+      observationStatus: "handoff_ready",
+      observationWindow: "next 24-72h",
+      observationMetrics: metrics,
+      observationNextStep: `Start the observation window for ${label} and watch ${metrics.slice(0, 2).join(" / ")} first.`,
+    };
+  }
+
+  if (state === "observing") {
+    return {
+      observationStatus: "observing",
+      observationWindow: "active observation window",
+      observationMetrics: metrics,
+      observationNextStep: `Keep monitoring ${label} until the observation window resolves into success or renewed risk.`,
+    };
+  }
+
+  if (state === "succeeded") {
+    return {
+      observationStatus: "complete",
+      observationWindow: "observation completed",
+      observationMetrics: metrics,
+      observationNextStep: `Capture the winning pattern from ${label} and reuse it in the next cycle.`,
+    };
+  }
+
+  if (state === "returned_to_risk") {
+    return {
+      observationStatus: "regressed",
+      observationWindow: "immediate follow-up",
+      observationMetrics: metrics,
+      observationNextStep: `End observation for ${label} and open a corrective follow-up based on the renewed risk.`,
+    };
+  }
+
+  return {
+    observationStatus: "not_started",
+    observationWindow: "starts after execution",
+    observationMetrics: metrics,
+    observationNextStep: `Execute ${label} first, then begin the observation window.`,
+  };
+}
+
+function summarizePlaybookRef(playbook) {
+  if (!playbook) return null;
+  const latestApplication = Array.isArray(playbook.applications) && playbook.applications.length ? playbook.applications[0] : null;
+  return {
+    id: playbook.id,
+    title: playbook.title,
+    actionPath: `/ops/playbooks/${playbook.id}`,
+    latestApplication: latestApplication
+      ? {
+          id: latestApplication.id,
+          status: latestApplication.status,
+          createdAt: latestApplication.createdAt,
+          nextAction: latestApplication.nextAction ?? null,
+        }
+      : null,
+  };
+}
+
+function buildDailySnapshotHistory({ snapshots } = {}) {
+  const items = Array.isArray(snapshots) ? snapshots : [];
+  const recent = items
+    .slice()
+    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
+    .slice(0, 7);
+
+  return {
+    items: recent,
+  };
+}
+
+function buildWeeklyOperatingReview({
+  dailySnapshotHistory,
+  governanceOverview,
+  growthLoopOverview,
+  geoOverview,
+  growthExperimentOverview,
+  commerceSourceSummary,
+  commerceProposals,
+} = {}) {
+  const autoActionPolicy = getAutoActionPolicy();
+  const items = Array.isArray(dailySnapshotHistory?.items) ? dailySnapshotHistory.items : [];
+  const sorted = items.slice().sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+  const from = sorted[0]?.date ?? null;
+  const to = sorted[sorted.length - 1]?.date ?? null;
+
+  const bestBetSources = sorted.reduce((acc, item) => {
+    const src = item?.todaysBestBet?.source ? String(item.todaysBestBet.source) : "none";
+    acc[src] = (acc[src] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  const healthBuckets = {
+    governance: { healthy: 0, warning: 0, degraded: 0 },
+    growth_loop: { healthy: 0, warning: 0, degraded: 0 },
+    geo: { healthy: 0, warning: 0, degraded: 0 },
+    experiment: { healthy: 0, warning: 0, degraded: 0 },
+  };
+  const bump = (bucket, health) => {
+    if (!bucket) return;
+    if (health === "degraded") bucket.degraded += 1;
+    else if (health === "warning") bucket.warning += 1;
+    else bucket.healthy += 1;
+  };
+
+  const riskDays = [];
+  sorted.forEach((item) => {
+    bump(healthBuckets.governance, item?.governanceOverview?.health);
+    bump(healthBuckets.growth_loop, item?.growthLoopOverview?.health);
+    bump(healthBuckets.geo, item?.geoOverview?.health);
+    bump(healthBuckets.experiment, item?.growthExperimentOverview?.health);
+
+    const degraded = [];
+    if (item?.governanceOverview?.health === "degraded") degraded.push("governance");
+    if (item?.growthLoopOverview?.health === "degraded") degraded.push("growth_loop");
+    if (item?.geoOverview?.health === "degraded") degraded.push("geo");
+    if (item?.growthExperimentOverview?.health === "degraded") degraded.push("experiment");
+    if (degraded.length) {
+      riskDays.push({
+        date: item.date,
+        degraded,
+        bestBetSource: item?.todaysBestBet?.source ?? "none",
       });
     }
   });
 
-  Object.values(productTargets).forEach((target) => {
-    const descLength = String(target.currentShortDescription || "").trim().length;
-    const benefitCount = Array.isArray(target.currentKeyBenefits) ? target.currentKeyBenefits.length : 0;
-    if (descLength < 48 || benefitCount < 4) {
-      thinContent.push({
-        key: `product:${target.targetId}`,
-        targetType: "product",
-        targetId: target.targetId,
-        title: target.title,
-        targetPath: target.targetPath,
-        observedCount: Math.min(descLength, benefitCount * 12),
-        threshold: 48,
-        reason: `${target.title} still has a short explanation layer for SEO/GEO. Expand buyer intent, objections, and next-step guidance beyond the basic hero copy.`,
-      });
+  const degradedTotal =
+    healthBuckets.governance.degraded +
+    healthBuckets.growth_loop.degraded +
+    healthBuckets.geo.degraded +
+    healthBuckets.experiment.degraded;
+  const warningTotal =
+    healthBuckets.governance.warning +
+    healthBuckets.growth_loop.warning +
+    healthBuckets.geo.warning +
+    healthBuckets.experiment.warning;
+
+  const health = degradedTotal > 0 ? "warning" : warningTotal > 0 ? "warning" : "healthy";
+  const headline =
+    health === "healthy"
+      ? "Weekly review: stable week"
+      : degradedTotal > 0
+        ? "Weekly review: risk surfaced"
+        : "Weekly review: soft signals";
+
+  const focus = (() => {
+    const scores = [
+      ["governance", healthBuckets.governance.degraded * 3 + healthBuckets.governance.warning],
+      ["growth_loop", healthBuckets.growth_loop.degraded * 3 + healthBuckets.growth_loop.warning],
+      ["geo", healthBuckets.geo.degraded * 3 + healthBuckets.geo.warning],
+      ["experiment", healthBuckets.experiment.degraded * 3 + healthBuckets.experiment.warning],
+    ];
+    scores.sort((a, b) => b[1] - a[1]);
+    return scores[0]?.[0] ?? "governance";
+  })();
+
+  const summary = `days ${sorted.length} · best bet sources ${Object.entries(bestBetSources)
+    .map(([k, v]) => `${k}:${v}`)
+    .join(" ")} · focus ${focus}`;
+  const executionOutcomes = (() => {
+    const counts = {
+      executed: 0,
+      observing: 0,
+      succeeded: 0,
+      returned_to_risk: 0,
+    };
+    const items = sorted
+      .map((item) => {
+        const bet = item?.todaysBestBet ?? null;
+        const executionState = bet?.executionState ? String(bet.executionState) : "pending";
+        if (counts[executionState] !== undefined) counts[executionState] += 1;
+        return bet
+          ? {
+              date: item.date,
+              source: bet.source,
+              headline: bet.headline,
+              targetType: bet.targetType ?? "monitoring",
+              targetLabel: bet.targetLabel,
+              executionState,
+              observationStatus: bet.observationStatus ?? "not_started",
+            }
+          : null;
+      })
+      .filter(Boolean)
+      .slice(-5)
+      .reverse();
+    const summary =
+      `executed ${counts.executed} · observing ${counts.observing} · succeeded ${counts.succeeded} · returned_to_risk ${counts.returned_to_risk}`;
+    return {
+      counts,
+      summary,
+      items,
+    };
+  })();
+  const outcomeAttribution = (() => {
+    const bySource = {
+      governance: { total: 0, executed: 0, observing: 0, succeeded: 0, returned_to_risk: 0 },
+      growth_loop: { total: 0, executed: 0, observing: 0, succeeded: 0, returned_to_risk: 0 },
+      geo: { total: 0, executed: 0, observing: 0, succeeded: 0, returned_to_risk: 0 },
+      experiment: { total: 0, executed: 0, observing: 0, succeeded: 0, returned_to_risk: 0 },
+    };
+    const winners = new Map();
+    const regressions = new Map();
+
+    sorted.forEach((item) => {
+      const bet = item?.todaysBestBet ?? null;
+      if (!bet?.source) return;
+      const src = String(bet.source);
+      if (!bySource[src]) return;
+      const state = bet?.executionState ? String(bet.executionState) : "pending";
+      bySource[src].total += 1;
+      if (bySource[src][state] !== undefined) bySource[src][state] += 1;
+
+      const targetType = String(bet.targetType || "unknown");
+      const key = `${src}:${targetType}:${String(bet.targetLabel || bet.headline || "")}`;
+      if (state === "succeeded") {
+        const current = winners.get(key) ?? {
+          source: src,
+          targetType,
+          targetLabel: bet.targetLabel,
+          headline: bet.headline,
+          count: 0,
+        };
+        current.count += 1;
+        winners.set(key, current);
+      }
+      if (state === "returned_to_risk") {
+        const current = regressions.get(key) ?? {
+          source: src,
+          targetType,
+          targetLabel: bet.targetLabel,
+          headline: bet.headline,
+          count: 0,
+        };
+        current.count += 1;
+        regressions.set(key, current);
+      }
+    });
+
+    const topWinners = Array.from(winners.values())
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 3);
+    const topRegressions = Array.from(regressions.values())
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 3);
+
+    const bestSource = Object.entries(bySource)
+      .slice()
+      .sort((a, b) => b[1].succeeded - a[1].succeeded || b[1].executed - a[1].executed)[0]?.[0] ?? null;
+
+    const hints = [];
+    if (topWinners.length) {
+      hints.push(`Capture winning patterns: ${topWinners.map((w) => `${w.source}:${w.targetLabel || w.headline}`).join(" · ")}`);
+    } else {
+      hints.push("No confirmed wins this week; prioritize observation follow-ups and tighten rollout scope.");
     }
+    if (topRegressions.length) {
+      hints.push(`Regressions to watch: ${topRegressions.map((r) => `${r.source}:${r.targetLabel || r.headline}`).join(" · ")}`);
+    }
+    if (bestSource) {
+      hints.push(`Most effective bet source this week: ${bestSource}`);
+    }
+
+    return {
+      bySource,
+      winningPatterns: topWinners,
+      regressionPatterns: topRegressions,
+      hints,
+    };
+  })();
+  const playbookDrafts = (() => {
+    const candidates = Array.isArray(outcomeAttribution?.winningPatterns) ? outcomeAttribution.winningPatterns : [];
+    const drafts = [];
+    candidates.forEach((pattern) => {
+      const key = `${pattern.source}:${pattern.targetType}`;
+      const observation = buildObservationHandoff({
+        source: pattern.source,
+        targetType: pattern.targetType,
+        targetLabel: pattern.targetLabel || pattern.headline,
+        executionState: "executed",
+      });
+      const steps = [
+        { code: "review_draft", label: "Review draft", detail: "Review the generated draft/proposal and confirm scope." },
+        { code: "promote_candidate", label: "Promote candidate", detail: "Promote to candidate stage once review is satisfied." },
+        { code: "execute_transition", label: "Execute transition", detail: "Trigger the safe transition (proposal/repo lane) and record feedback." },
+        { code: "observe", label: "Observe", detail: `Observe for ${observation.observationWindow} and watch key metrics.` },
+      ];
+      const playbook = upsertPlaybook({
+        key,
+        title: `Playbook: ${pattern.source} / ${pattern.targetType}`,
+        source: pattern.source,
+        targetType: pattern.targetType,
+        steps,
+        observationWindow: observation.observationWindow,
+        observationMetrics: observation.observationMetrics,
+        examples: [{ targetLabel: pattern.targetLabel, headline: pattern.headline, count: pattern.count }],
+        actor: "monitoring",
+      });
+      if (playbook) {
+        drafts.push({
+          ...summarizePlaybookRef(playbook),
+          key: playbook.key,
+          source: playbook.source,
+          targetType: playbook.targetType,
+        });
+      }
+    });
+    return drafts.slice(0, 3);
+  })();
+  const playbookApplicationOutcomes = (() => {
+    const playbooks = listPlaybooks({ limit: 100 })?.items ?? [];
+    const counts = { draft: 0, in_review: 0, executed: 0, observing: 0, succeeded: 0, regressed: 0, cancelled: 0 };
+    const items = [];
+    playbooks.forEach((pb) => {
+      const apps = Array.isArray(pb.applications) ? pb.applications : [];
+      apps.forEach((app) => {
+        const createdDate = String(app?.createdAt || "").slice(0, 10);
+        if (from && createdDate && createdDate < from) return;
+        if (to && createdDate && createdDate > to) return;
+        const status = String(app?.status || "draft");
+        if (counts[status] !== undefined) counts[status] += 1;
+        items.push({
+          playbookId: pb.id,
+          playbookTitle: pb.title,
+          applicationId: app.id,
+          createdAt: app.createdAt,
+          status,
+          targetType: app.targetType,
+          targetId: app.targetId ?? null,
+          targetLabel: app.targetLabel || app.targetType || pb.title,
+          nextAction: app.nextAction ?? null,
+          actionPath: `/ops/playbooks/${pb.id}`,
+        });
+      });
+    });
+    items.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    const recent = items.slice(0, 6);
+    const summary = `draft ${counts.draft} · in_review ${counts.in_review} · executed ${counts.executed} · observing ${counts.observing} · succeeded ${counts.succeeded} · regressed ${counts.regressed}`;
+    return { counts, summary, items: recent };
+  })();
+
+  const pickExperimentItem = (predicate) => {
+    const list = Array.isArray(growthExperimentOverview?.items) ? growthExperimentOverview.items : [];
+    const ranked = list
+      .filter((item) => (predicate ? predicate(item) : true))
+      .slice()
+      .sort((a, b) => {
+        const aRank = a.kind === "followup_risk" ? 3 : a.kind === "needs_decision" ? 2 : 1;
+        const bRank = b.kind === "followup_risk" ? 3 : b.kind === "needs_decision" ? 2 : 1;
+        return bRank - aRank;
+      });
+    return ranked[0] ?? null;
+  };
+
+  const pickWeakCommerceSource = () => {
+    const sources = Array.isArray(commerceSourceSummary?.sources) ? commerceSourceSummary.sources : [];
+    return (
+      sources
+      .slice()
+      .sort((a, b) => {
+        const rank = (health) => (health === "degraded" ? 3 : health === "warning" ? 2 : 1);
+        const healthDelta = rank(b.health) - rank(a.health);
+        if (healthDelta !== 0) return healthDelta;
+        return Number(b.followupRisk ?? 0) - Number(a.followupRisk ?? 0) || Number(b.proposals ?? 0) - Number(a.proposals ?? 0);
+      })[0] ?? null
+    );
+  };
+  const buildCommerceProposalArtifact = (source) => {
+    if (!source) return null;
+    const proposals = Array.isArray(commerceProposals) ? commerceProposals : [];
+    const match = proposals
+      .filter((item) => String(item?.targetId || "") === String(source))
+      .slice()
+      .sort((a, b) => String(b?.createdAt || "").localeCompare(String(a?.createdAt || "")))[0];
+    if (!match?.id) return null;
+    return {
+      kind: "proposal",
+      id: String(match.id),
+      status: String(match.status || "draft"),
+      label: String(match.reviewSummary?.headline || match.summary || `Proposal for ${source}`),
+      actionPath: `/ops/proposals/${match.id}`,
+      actionLabel: "Open auto draft",
+    };
+  };
+
+  const actionForFocus = (key) => {
+    const buildAutomationEligibility = ({ source, targetType, targetId, targetMeta } = {}) => {
+      const targetIdString = targetId == null ? "" : String(targetId);
+      const targetTypeString = targetType == null ? "" : String(targetType);
+      const meta = targetMeta && typeof targetMeta === "object" ? targetMeta : {};
+
+      if (source === "governance" || targetTypeString === "audit_line" || targetTypeString === "result_governance_lane") {
+        return {
+          automationEligibility: "manual_only",
+          automationReason: "This path can affect cross-line governance or recovery policy, so it should stay manual-first.",
+        };
+      }
+
+      if (source === "growth_loop" && targetTypeString === "commerce_source") {
+        return {
+          automationEligibility: "auto_proposal_candidate",
+          automationReason: `Weak source ${String(meta.source || targetIdString || "unknown")} is repetitive enough to auto-prepare a proposal candidate, but it should still be reviewed before apply.`,
+        };
+      }
+
+      if (source === "geo" || targetTypeString === "ai_concierge_item") {
+        return {
+          automationEligibility: "auto_draft",
+          automationReason:
+            "AI concierge tuning already has a draft-oriented workflow, so the next safe step is auto-draft rather than direct apply.",
+        };
+      }
+
+      if (source === "experiment" && targetTypeString === "proposal") {
+        const repoPolicyEnabled = Boolean(autoActionPolicy?.autoMerge?.enabled || autoActionPolicy?.autoRevert?.enabled);
+        return {
+          automationEligibility: "auto_proposal_candidate",
+          automationReason: repoPolicyEnabled
+            ? "A proposal exists and repo auto-actions are enabled for later stages, so this item is a good proposal candidate with human review."
+            : "A proposal exists, but later execution still needs human review, so keep it at proposal-candidate level.",
+        };
+      }
+
+      if (source === "experiment" || targetTypeString === "queue_item" || targetTypeString === "proposal") {
+        return {
+          automationEligibility: "auto_draft",
+          automationReason: "This item is structured enough for auto-draft preparation, but it still needs a human decision before rollout.",
+        };
+      }
+
+      return {
+        automationEligibility: "manual_only",
+        automationReason: "This suggestion still needs manual review before the system should automate the next step.",
+      };
+    };
+
+    if (key === "governance") {
+      const primaryKey = governanceOverview?.primaryLine ?? null;
+      const line = Array.isArray(governanceOverview?.lines) ? governanceOverview.lines.find((l) => l.key === primaryKey) : null;
+      return {
+        actionPath: line?.actionPath ?? "/ops/monitoring",
+        actionLabel: line?.actionLabel ?? "Open governance audit",
+        expectedImpact: "Reduce the highest-priority governance risk and keep lanes stable.",
+        metricSummary: line?.detail ?? null,
+        targetType: "audit_line",
+        targetId: line?.key ?? governanceOverview?.primaryLine ?? null,
+        targetLabel: line?.title ?? governanceOverview?.primaryLine ?? "Governance overview",
+        targetMeta: line ? { lineKey: line.key } : null,
+        ...buildAutomationEligibility({
+          source: "governance",
+          targetType: "audit_line",
+          targetId: line?.key ?? governanceOverview?.primaryLine ?? null,
+          targetMeta: line ? { lineKey: line.key } : null,
+        }),
+      };
+    }
+
+    if (key === "growth_loop") {
+      const lines = Array.isArray(growthLoopOverview?.lines) ? growthLoopOverview.lines : [];
+      const rank = (status) => (status === "degraded" ? 3 : status === "warning" ? 2 : 1);
+      const weakest = lines.slice().sort((a, b) => rank(b.status) - rank(a.status))[0] ?? null;
+      if (weakest?.key === "conversion") {
+        const source = pickWeakCommerceSource();
+        const artifact = buildCommerceProposalArtifact(source?.source ?? null);
+        return {
+          actionPath: artifact?.actionPath ?? (source?.source ? `/ops/audit/commerce?source=${encodeURIComponent(source.source)}` : "/ops/audit/commerce"),
+          actionLabel: artifact?.actionLabel ?? "Open commerce audit",
+          expectedImpact: "Improve checkout conversion and remove the most visible friction first.",
+          metricSummary: source?.detail ?? weakest?.detail ?? null,
+          targetType: source?.source ? "commerce_source" : "growth_segment",
+          targetId: source?.source ?? "conversion",
+          targetLabel: source?.source ?? "Conversion",
+          targetMeta: source?.source ? { source: source.source, segment: "conversion" } : { segment: "conversion" },
+          ...buildAutomationEligibility({
+            source: "growth_loop",
+            targetType: source?.source ? "commerce_source" : "growth_segment",
+            targetId: source?.source ?? "conversion",
+            targetMeta: source?.source ? { source: source.source, segment: "conversion" } : { segment: "conversion" },
+          }),
+          automationArtifact: artifact,
+          automationReason:
+            artifact && source?.source
+              ? `A draft proposal is already prepared for weakest source ${source.source}; review it before apply.`
+              : undefined,
+        };
+      }
+      if (weakest?.key === "traffic") {
+        return {
+          actionPath: "/ops/audit/seo-sync",
+          actionLabel: "Open SEO audit",
+          expectedImpact: "Improve discoverability and traffic quality before funnel optimizations.",
+          metricSummary: weakest?.detail ?? null,
+          targetType: "growth_segment",
+          targetId: "traffic",
+          targetLabel: weakest?.title ?? "Traffic",
+          targetMeta: { segment: "traffic" },
+          ...buildAutomationEligibility({
+            source: "growth_loop",
+            targetType: "growth_segment",
+            targetId: "traffic",
+            targetMeta: { segment: "traffic" },
+          }),
+          automationArtifact: null,
+        };
+      }
+      if (weakest?.key === "result") {
+        return {
+          actionPath: "/ops/audit/result-governance",
+          actionLabel: "Open governance audit",
+          expectedImpact: "Reduce payment/fulfillment issues that block conversion gains from turning into real purchases.",
+          metricSummary: weakest?.detail ?? null,
+          targetType: "result_governance_lane",
+          targetId: "result",
+          targetLabel: weakest?.title ?? "Result",
+          targetMeta: { segment: "result" },
+          ...buildAutomationEligibility({
+            source: "growth_loop",
+            targetType: "result_governance_lane",
+            targetId: "result",
+            targetMeta: { segment: "result" },
+          }),
+          automationArtifact: null,
+        };
+      }
+      return {
+        actionPath: "/ops/monitoring",
+        actionLabel: "Open monitoring",
+        expectedImpact: "Tighten traffic → conversion → result alignment and stop compounding losses.",
+        metricSummary: weakest?.detail ?? null,
+        targetType: "growth_segment",
+        targetId: weakest?.key ?? "growth_loop",
+        targetLabel: weakest?.title ?? "Growth loop",
+        targetMeta: weakest?.key ? { segment: weakest.key } : null,
+        ...buildAutomationEligibility({
+          source: "growth_loop",
+          targetType: "growth_segment",
+          targetId: weakest?.key ?? "growth_loop",
+          targetMeta: weakest?.key ? { segment: weakest.key } : null,
+        }),
+        automationArtifact: null,
+      };
+    }
+
+    if (key === "geo") {
+      const geoTop = pickExperimentItem((item) => item.groupKey === "ai_concierge");
+      return geoTop
+        ? {
+            actionPath: geoTop.automationArtifact?.actionPath ?? geoTop.actionPath,
+            actionLabel: geoTop.automationArtifact?.actionLabel ?? geoTop.actionLabel,
+            expectedImpact: "Improve AI-assisted answer quality and handoff before scaling more GEO traffic.",
+            metricSummary:
+              geoTop.effectMetrics?.length
+                ? geoTop.effectMetrics.map((metric) => `${metric.label} ${metric.value}`).join(" · ")
+                : geoTop.effectSummary ?? null,
+            targetType: geoTop.targetType ?? "ai_concierge_item",
+            targetId: geoTop.targetId ?? geoTop.id ?? null,
+            targetLabel: geoTop.targetLabel ?? geoTop.headline,
+            targetMeta: geoTop.targetMeta ?? null,
+            effectState: geoTop.effectState ?? null,
+            ...buildAutomationEligibility({
+              source: "geo",
+              targetType: geoTop.targetType ?? "ai_concierge_item",
+              targetId: geoTop.targetId ?? geoTop.id ?? null,
+              targetMeta: geoTop.targetMeta ?? null,
+            }),
+            automationArtifact: geoTop.automationArtifact ?? null,
+            automationReason:
+              geoTop.automationArtifact
+                ? `A draft proposal is already prepared for ${geoTop.targetLabel ?? geoTop.headline}; review it before rollout.`
+                : undefined,
+          }
+        : {
+            actionPath: "/ops/monitoring",
+            actionLabel: "Open GEO overview",
+            expectedImpact: "Improve AI-assisted discoverability and answer quality before scaling more GEO traffic.",
+            metricSummary: geoOverview?.detail ?? null,
+            targetType: "geo_overview",
+            targetId: "geo",
+            targetLabel: "GEO overview",
+            targetMeta: null,
+            ...buildAutomationEligibility({
+              source: "geo",
+              targetType: "geo_overview",
+              targetId: "geo",
+              targetMeta: null,
+            }),
+            automationArtifact: null,
+          };
+    }
+
+    if (key === "experiment") {
+      const top = pickExperimentItem();
+      return top
+        ? {
+            actionPath: top.actionPath,
+            actionLabel: top.actionLabel,
+            expectedImpact: "Reduce follow-up risk and unblock the next high-leverage proposals.",
+            metricSummary:
+              top.effectMetrics?.length
+                ? top.effectMetrics.map((metric) => `${metric.label} ${metric.value}`).join(" · ")
+                : top.effectSummary ?? null,
+            targetType: top.targetType ?? "queue_item",
+            targetId: top.targetId ?? top.id ?? null,
+            targetLabel: top.targetLabel ?? top.headline,
+            targetMeta: top.targetMeta ?? null,
+            effectState: top.effectState ?? null,
+            ...buildAutomationEligibility({
+              source: "experiment",
+              targetType: top.targetType ?? "queue_item",
+              targetId: top.targetId ?? top.id ?? null,
+              targetMeta: top.targetMeta ?? null,
+            }),
+            automationArtifact: null,
+          }
+        : {
+            actionPath: "/ops/monitoring",
+            actionLabel: "Open experiment queue",
+            expectedImpact: "Reduce follow-up risk and unblock the next high-leverage proposals.",
+            metricSummary: growthExperimentOverview?.detail ?? null,
+            targetType: "experiment_queue",
+            targetId: "experiment",
+            targetLabel: "Experiment queue",
+            targetMeta: null,
+            ...buildAutomationEligibility({
+              source: "experiment",
+              targetType: "experiment_queue",
+              targetId: "experiment",
+              targetMeta: null,
+            }),
+            automationArtifact: null,
+          };
+    }
+
+    return {
+      actionPath: "/ops/monitoring",
+      actionLabel: "Open monitoring",
+      expectedImpact: "Keep the operating loop stable.",
+      metricSummary: null,
+      targetType: "monitoring",
+      targetId: "monitoring",
+      targetLabel: "Monitoring overview",
+      targetMeta: null,
+      ...buildAutomationEligibility({
+        source: "governance",
+        targetType: "monitoring",
+        targetId: "monitoring",
+        targetMeta: null,
+      }),
+      automationArtifact: null,
+    };
+  };
+
+  const mostCommonDegradedLayer = (() => {
+    const counts = { governance: 0, growth_loop: 0, geo: 0, experiment: 0 };
+    riskDays.forEach((day) => {
+      (day.degraded || []).forEach((key) => {
+        if (counts[key] !== undefined) counts[key] += 1;
+      });
+    });
+    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    return entries[0]?.[1] > 0 ? entries[0][0] : null;
+  })();
+
+  const topSource = (() => {
+    const entries = Object.entries(bestBetSources).sort((a, b) => b[1] - a[1]);
+    return entries[0]?.[0] ?? "none";
+  })();
+
+  const nextWeekBets = [];
+  const focusAction = actionForFocus(focus);
+  const focusPromotion = buildPromotionState({
+    automationEligibility: focusAction.automationEligibility,
+    automationArtifact: focusAction.automationArtifact,
+    targetType: focusAction.targetType,
+  });
+  const focusExecution = buildExecutionState({
+    source: focus,
+    targetType: focusAction.targetType,
+    health,
+    effectState: focusAction.effectState ?? null,
+    automationArtifact: focusAction.automationArtifact,
+  });
+  const focusObservation = buildObservationHandoff({
+    source: focus,
+    targetType: focusAction.targetType,
+    targetLabel: focusAction.targetLabel ?? `Focus ${focus}`,
+    executionState: focusExecution.executionState,
+  });
+  const focusPlaybook = findPlaybookByKey(`${focus}:${String(focusAction.targetType || "monitoring")}`);
+  const focusPromotionAction = buildPromotionAction({
+    promotionEligibility: focusPromotion.promotionEligibility,
+    automationArtifact: focusAction.automationArtifact,
+    actionPath: focusAction.actionPath,
+    targetType: focusAction.targetType,
+    targetLabel: focusAction.targetLabel ?? `Focus ${focus}`,
+  });
+  nextWeekBets.push({
+    priority: "p0",
+    title: `Focus bet: ${focus}`,
+    reason: `This week’s weighted risk and soft signals concentrate in ${focus}.`,
+    actionPath: focusAction.actionPath,
+    actionLabel: focusAction.actionLabel,
+    expectedImpact: focusAction.expectedImpact,
+    metricSummary: focusAction.metricSummary ?? null,
+    targetType: focusAction.targetType ?? "monitoring",
+    targetId: focusAction.targetId ?? null,
+    targetLabel: focusAction.targetLabel ?? `Focus ${focus}`,
+    targetMeta: focusAction.targetMeta ?? null,
+    automationEligibility: focusAction.automationEligibility ?? "manual_only",
+    automationReason: focusAction.automationReason ?? "This suggestion should stay manual-first.",
+    automationArtifact: focusAction.automationArtifact ?? null,
+    promotionEligibility: focusPromotion.promotionEligibility,
+    promotionReason: focusPromotion.promotionReason,
+    promotionAction: focusPromotionAction,
+    executionState: focusExecution.executionState,
+    executionReason: focusExecution.executionReason,
+    observationStatus: focusObservation.observationStatus,
+    observationWindow: focusObservation.observationWindow,
+    observationMetrics: focusObservation.observationMetrics,
+    observationNextStep: focusObservation.observationNextStep,
+    playbookRef: summarizePlaybookRef(focusPlaybook),
   });
 
-  Object.values(collectionTargets).forEach((target) => {
-    const moduleCount = Array.isArray(target.currentModules) ? target.currentModules.length : 0;
-    const heroLength = String(target.currentHeroSummary || "").trim().length;
-    if (moduleCount < 4 || heroLength < 90) {
-      thinContent.push({
-        key: `collection:${target.targetId}`,
-        targetType: "collection",
-        targetId: target.targetId,
-        title: target.title,
-        targetPath: target.targetPath,
-        observedCount: moduleCount,
-        threshold: 4,
-        reason: `${target.title} needs more structured buying help and richer topic coverage before it can act as a strong organic hub.`,
-      });
-    }
-    if (!target.currentModules?.includes("guide-links")) {
-      internalLinkGaps.push({
-        key: `collection:${target.targetId}`,
-        targetType: "collection",
-        targetId: target.targetId,
-        title: target.title,
-        targetPath: target.targetPath,
-        observedCount: moduleCount,
-        threshold: 4,
-        reason: `${target.title} is not linking strongly enough into adjacent guides, FAQs, or narrower decision pages.`,
-      });
-    }
-  });
+  if (mostCommonDegradedLayer && mostCommonDegradedLayer !== focus) {
+    const action = actionForFocus(mostCommonDegradedLayer);
+    const actionPromotion = buildPromotionState({
+      automationEligibility: action.automationEligibility,
+      automationArtifact: action.automationArtifact,
+      targetType: action.targetType,
+    });
+    const actionExecution = buildExecutionState({
+      source: mostCommonDegradedLayer,
+      targetType: action.targetType,
+      health,
+      effectState: action.effectState ?? null,
+      automationArtifact: action.automationArtifact,
+    });
+    const actionObservation = buildObservationHandoff({
+      source: mostCommonDegradedLayer,
+      targetType: action.targetType,
+      targetLabel: action.targetLabel ?? `Stabilize ${mostCommonDegradedLayer}`,
+      executionState: actionExecution.executionState,
+    });
+    const actionPlaybook = findPlaybookByKey(`${mostCommonDegradedLayer}:${String(action.targetType || "monitoring")}`);
+    const actionPromotionAction = buildPromotionAction({
+      promotionEligibility: actionPromotion.promotionEligibility,
+      automationArtifact: action.automationArtifact,
+      actionPath: action.actionPath,
+      targetType: action.targetType,
+      targetLabel: action.targetLabel ?? `Stabilize ${mostCommonDegradedLayer}`,
+    });
+    nextWeekBets.push({
+      priority: "p1",
+      title: `Stabilize bet: ${mostCommonDegradedLayer}`,
+      reason: `Degraded days repeatedly surfaced in ${mostCommonDegradedLayer}.`,
+      actionPath: action.actionPath,
+      actionLabel: action.actionLabel,
+      expectedImpact: action.expectedImpact,
+      metricSummary: action.metricSummary ?? null,
+      targetType: action.targetType ?? "monitoring",
+      targetId: action.targetId ?? null,
+      targetLabel: action.targetLabel ?? `Stabilize ${mostCommonDegradedLayer}`,
+      targetMeta: action.targetMeta ?? null,
+      automationEligibility: action.automationEligibility ?? "manual_only",
+      automationReason: action.automationReason ?? "This suggestion should stay manual-first.",
+      automationArtifact: action.automationArtifact ?? null,
+      promotionEligibility: actionPromotion.promotionEligibility,
+      promotionReason: actionPromotion.promotionReason,
+      promotionAction: actionPromotionAction,
+      executionState: actionExecution.executionState,
+      executionReason: actionExecution.executionReason,
+      observationStatus: actionObservation.observationStatus,
+      observationWindow: actionObservation.observationWindow,
+      observationMetrics: actionObservation.observationMetrics,
+      observationNextStep: actionObservation.observationNextStep,
+      playbookRef: summarizePlaybookRef(actionPlaybook),
+    });
+  }
 
-  Object.values(guideTargets).forEach((target) => {
-    const excerptLength = String(target.currentExcerpt || "").trim().length;
-    if (excerptLength < 36) {
-      thinContent.push({
-        key: `guide:${target.targetId}`,
-        targetType: "guide",
-        targetId: target.targetId,
-        title: target.title,
-        targetPath: target.targetPath,
-        observedCount: excerptLength,
-        threshold: 36,
-        reason: `${target.title} needs a stronger answer-first excerpt and clearer summary structure for GEO-style answer extraction.`,
-      });
-    }
-  });
+  if (topSource !== "none" && topSource !== "governance") {
+    const repeatAction = actionForFocus(topSource === "growth_loop" ? "growth_loop" : topSource === "geo" ? "geo" : topSource === "experiment" ? "experiment" : "governance");
+    const repeatPromotion = buildPromotionState({
+      automationEligibility: repeatAction.automationEligibility,
+      automationArtifact: repeatAction.automationArtifact,
+      targetType: repeatAction.targetType,
+    });
+    const repeatExecution = buildExecutionState({
+      source: topSource,
+      targetType: repeatAction.targetType,
+      health,
+      effectState: repeatAction.effectState ?? null,
+      automationArtifact: repeatAction.automationArtifact,
+    });
+    const repeatObservation = buildObservationHandoff({
+      source: topSource,
+      targetType: repeatAction.targetType,
+      targetLabel: repeatAction.targetLabel ?? `Work area ${topSource}`,
+      executionState: repeatExecution.executionState,
+    });
+    const repeatPlaybook = findPlaybookByKey(`${topSource}:${String(repeatAction.targetType || "monitoring")}`);
+    const repeatPromotionAction = buildPromotionAction({
+      promotionEligibility: repeatPromotion.promotionEligibility,
+      automationArtifact: repeatAction.automationArtifact,
+      actionPath: repeatAction.actionPath,
+      targetType: repeatAction.targetType,
+      targetLabel: repeatAction.targetLabel ?? `Work area ${topSource}`,
+    });
+    nextWeekBets.push({
+      priority: "p2",
+      title: `Make it repeatable: ${topSource}`,
+      reason: `Best bet repeatedly pointed to ${topSource}; convert it into a reusable playbook and reduce manual iteration.`,
+      actionPath: repeatAction.actionPath,
+      actionLabel: "Open work area",
+      expectedImpact: "Turn repeated fixes into a stable operating loop and cut follow-up risk.",
+      metricSummary: repeatAction.metricSummary ?? null,
+      targetType: repeatAction.targetType ?? "monitoring",
+      targetId: repeatAction.targetId ?? null,
+      targetLabel: repeatAction.targetLabel ?? `Work area ${topSource}`,
+      targetMeta: repeatAction.targetMeta ?? null,
+      automationEligibility: repeatAction.automationEligibility ?? "manual_only",
+      automationReason: repeatAction.automationReason ?? "This suggestion should stay manual-first.",
+      automationArtifact: repeatAction.automationArtifact ?? null,
+      promotionEligibility: repeatPromotion.promotionEligibility,
+      promotionReason: repeatPromotion.promotionReason,
+      promotionAction: repeatPromotionAction,
+      executionState: repeatExecution.executionState,
+      executionReason: repeatExecution.executionReason,
+      observationStatus: repeatObservation.observationStatus,
+      observationWindow: repeatObservation.observationWindow,
+      observationMetrics: repeatObservation.observationMetrics,
+      observationNextStep: repeatObservation.observationNextStep,
+      playbookRef: summarizePlaybookRef(repeatPlaybook),
+    });
+  }
 
-  return { contentGaps, thinContent, internalLinkGaps };
+  return {
+    health,
+    range: { from, to, days: sorted.length },
+    headline,
+    summary,
+    executionOutcomes,
+    outcomeAttribution,
+    playbookDrafts,
+    playbookApplicationOutcomes,
+    focus,
+    bestBetSources,
+    healthBuckets,
+    riskDays: riskDays.slice(0, 7),
+    nextWeekBets: nextWeekBets.slice(0, 3),
+  };
 }
 
 async function buildMonitoringSummary({ targetType, actor } = {}) {
   const generatedAt = new Date().toISOString();
   const runtime = getSignalsRuntimeStatus();
   const dependencies = await probeDependencies();
+  const seoSyncConfig = getSeoSearchConsoleAutomationConfig();
+  const seoSyncStatus = getSeoSyncStatus();
+  const seoSyncHealth = summarizeSeoSearchConsoleHealth({ config: seoSyncConfig, status: seoSyncStatus });
+  const seoSyncHistory = buildSeoSyncHistorySummary({ seoSyncStatus });
 
   try {
-    const seoGeo = buildSeoGeoRecommendationSummary();
+    const seoGeo = seoOps.getSeoGeoRecommendationSummary();
     seoGeo.contentGaps.forEach((item) => {
       createContentGapRecommendation({
         targetType: item.targetType,
@@ -1449,76 +3862,25 @@ async function buildMonitoringSummary({ targetType, actor } = {}) {
     // non-blocking
   }
 
-  const seoRows = listSeoMetrics({ sinceDays: 14, limit: 500 }).items;
-  const seoTargets = Array.from(
-    new Map(
-      seoRows.map((row) => [`${row.targetType}:${row.targetId}`, { targetType: row.targetType, targetId: row.targetId }]),
-    ).values(),
-  );
-  const metaForSeoTarget = (targetType, targetId) => {
-    if (targetType === "product") return productTargets[targetId] ?? null;
-    if (targetType === "collection") return collectionTargets[targetId] ?? null;
-    if (targetType === "guide") return guideTargets[`guide:${targetId}`] ?? null;
-    if (targetType === "faq") return faqTargets[targetId] ?? null;
-    return null;
-  };
-
-  const seoPerformance = {
+  const { seoFreshness, seoImportDiagnostics, seoPerformance, seoAlerts, seoRecommendationCandidates } = seoOps.getSeoMonitoringSnapshot({
+    warningDays: 3,
+    criticalDays: 7,
+    sinceDays: 14,
+    limit: 500,
     windowDays: 7,
-    targets: seoTargets
-      .map((t) => {
-        const meta = metaForSeoTarget(t.targetType, t.targetId);
-        const summary = getSeoMetricsWindowSummary({ targetType: t.targetType, targetId: t.targetId, windowDays: 7 });
-        const lowCtr = summary.current.impressions >= 80 && summary.current.ctr < 0.02;
-        const posDrop = summary.delta.position != null && summary.delta.position > 3 && summary.current.impressions >= 50;
-        const issueTypes = [lowCtr ? "low_ctr" : null, posDrop ? "position_drop" : null].filter(Boolean);
-        const scoreLowCtr = lowCtr ? (0.02 - summary.current.ctr) * 10000 + summary.current.impressions / 10 : 0;
-        const scorePosDrop = posDrop ? summary.delta.position * 120 + summary.current.impressions / 10 : 0;
-        const issueScore = Math.max(scoreLowCtr, scorePosDrop);
-
-        return {
-          ...t,
-          title: meta?.title ?? `${t.targetType}:${t.targetId}`,
-          targetPath: meta?.targetPath ?? null,
-          summary,
-          issueTypes,
-          issueScore,
-        };
-      })
-      .sort((a, b) => (b.issueScore || 0) - (a.issueScore || 0))
-      .slice(0, 50),
-  };
+  });
+  const seoRuntimeJudgment = buildSeoRuntimeJudgment({
+    seoSyncHealth,
+    seoFreshness,
+    seoImportDiagnostics,
+  });
 
   try {
-    seoPerformance.targets.forEach((t) => {
-      const s = t.summary;
-      if (s.current.impressions >= 80 && s.current.ctr < 0.02) {
-        createSeoLowCtrRecommendation({
-          targetType: t.targetType,
-          targetId: t.targetId,
-          title: t.title,
-          targetPath: t.targetPath,
-          impressions: s.current.impressions,
-          clicks: s.current.clicks,
-          ctr: s.current.ctr,
-          threshold: 0.02,
-          windowDays: s.windowDays,
-        });
-      }
-      if (s.delta.position != null && s.delta.position > 3 && s.current.impressions >= 50) {
-        createSeoPositionDropRecommendation({
-          targetType: t.targetType,
-          targetId: t.targetId,
-          title: t.title,
-          targetPath: t.targetPath,
-          impressions: s.current.impressions,
-          currentPosition: s.current.position,
-          previousPosition: s.previous.position,
-          deltaPosition: s.delta.position,
-          threshold: 3,
-          windowDays: s.windowDays,
-        });
-      }
+    seoRecommendationCandidates.lowCtr.forEach((candidate) => {
+      createSeoLowCtrRecommendation(candidate);
+    });
+    seoRecommendationCandidates.positionDrop.forEach((candidate) => {
+      createSeoPositionDropRecommendation(candidate);
     });
   } catch {
     // non-blocking
@@ -1538,6 +3900,8 @@ async function buildMonitoringSummary({ targetType, actor } = {}) {
 
   const since24h = hoursAgo(24);
   const recentEvents = listEvents().filter((event) => occurredSince(event, since24h));
+  const seoSyncControlAudit = buildSeoSyncControlAudit({ events: listEvents(), seoSyncHistory });
+  const seoSyncRecoveryReview = buildSeoSyncRecoveryReview({ seoSyncControlAudit });
   const warningPublishes24h = recentEvents.filter(
     (event) => event.action === "publish" && event?.verification?.level === "warning",
   );
@@ -1565,30 +3929,26 @@ async function buildMonitoringSummary({ targetType, actor } = {}) {
     purchaseGapAbs: { warning: 1, critical: 3 },
   };
 
-  const purchaseDiagnostics = listTargetSummaries({ targetType })
-    .filter((item) => item.latestSnapshot || item.activeRecommendationsCount > 0)
-    .map((item) => {
-      const diagnostics = getPurchaseDiagnostics({ targetType: item.target.type, targetId: item.target.id });
-      return {
-        title: item.target.title,
-        targetType: item.target.type,
-        targetId: item.target.id,
-        targetPath: item.target.targetPath ?? null,
-        status: diagnostics.status,
-        gap: diagnostics.gap,
-        eventPurchaseCount: diagnostics.eventPurchaseCount,
-        snapshotPurchaseCount: diagnostics.snapshotPurchaseCount,
-        windowDays: diagnostics.windowDays,
-      };
-    })
-    .filter((item) => item.status !== "aligned" && !(item.status === "missing_snapshot" && item.eventPurchaseCount === 0))
-    .sort((a, b) => Math.abs(b.gap) - Math.abs(a.gap) || String(a.title).localeCompare(String(b.title)));
-  const tracked24h = listTrackedEvents({ sinceHours: 24 });
+  const {
+    trackedEvents: tracked24h,
+    purchaseDiagnostics,
+    commerceCheckout,
+    weakCheckoutSources,
+    commerceRecommendationCandidates,
+    commerceAlerts,
+  } = commerceOps.getCommerceMonitoringSnapshot({
+    targetType,
+    sinceHours: 24,
+    thresholds,
+  });
   const aiConcierge = summarizeAiConcierge(tracked24h.filter((e) => e.source === "ai_concierge" || e?.metadata?.attribution?.src === "ai_concierge"));
-  const commerceCheckout = summarizeCommerceCheckout(tracked24h);
-  const paymentResults24h = summarizePaymentResults(tracked24h);
-  const fulfillmentResults24h = summarizeFulfillmentResults(tracked24h);
-  const refundResults24h = summarizeRefundResults(tracked24h);
+  const {
+    paymentResults24h,
+    fulfillmentResults24h,
+    refundResults24h,
+    resultGovernanceRecommendationCandidates,
+    resultGovernanceAlerts,
+  } = resultGovernanceOps.getResultGovernanceMonitoringSnapshot({ trackedEvents: tracked24h });
 
   const publishingCases = buildPublishingGovernanceCases({
     recentEvents,
@@ -1618,224 +3978,101 @@ async function buildMonitoringSummary({ targetType, actor } = {}) {
   } else if (dependencies.sanity.status === "not_configured") {
     alerts.push(buildAlert("warning", "Sanity probe is not configured", dependencies.sanity.detail));
   }
-  const weakCheckoutSources = commerceCheckout.bySource.filter(
-    (item) => item.checkoutStarts >= 3 && item.checkoutCompletionRate < 0.4,
-  );
-  [
-    { issueKey: "payment_failed", count: paymentResults24h.failed },
-    { issueKey: "payment_canceled", count: paymentResults24h.canceled },
-    { issueKey: "payment_requires_action", count: paymentResults24h.requiresAction },
-  ].forEach(({ issueKey, count }) => {
-    if (count < 1 || paymentResults24h.issues < 2) return;
-    const topTargets = Array.isArray(paymentResults24h.topTargets?.[issueKey]) ? paymentResults24h.topTargets[issueKey] : [];
-    createPaymentIssueRecommendation({
-      issueKey,
-      affectedOrders: count,
-      issueRate: paymentResults24h.issueRate,
-      paidCount: paymentResults24h.paid,
-      authorizedCount: paymentResults24h.authorized,
-      requiresActionCount: paymentResults24h.requiresAction,
-      failedCount: paymentResults24h.failed,
-      canceledCount: paymentResults24h.canceled,
-      dominantReason: paymentResults24h.dominantReasons?.[issueKey] ?? null,
-      targetBreakdown: topTargets,
-      weakestPath: topTargets[0] ?? null,
-    });
-  });
-  if (fulfillmentResults24h.processing >= 3 && fulfillmentResults24h.shipped + fulfillmentResults24h.delivered <= 1) {
-    const topTargets = Array.isArray(fulfillmentResults24h.topTargets?.fulfillment_processing)
-      ? fulfillmentResults24h.topTargets.fulfillment_processing
-      : [];
-    createFulfillmentBacklogRecommendation({
-      stageKey: "fulfillment_processing",
-      affectedOrders: fulfillmentResults24h.processing,
-      shippedCount: fulfillmentResults24h.shipped,
-      deliveredCount: fulfillmentResults24h.delivered,
-      targetBreakdown: topTargets,
-      weakestPath: topTargets[0] ?? null,
-    });
-  }
-  weakCheckoutSources.forEach((item) => {
-    const weakestPath = item.paths?.[0] ?? null;
-    createCheckoutCompletionRecommendation({
-      sourceKey: item.source,
-      observedRate: item.checkoutCompletionRate,
-      threshold: 0.4,
-      checkoutStarts: item.checkoutStarts,
-      checkoutCompletes: item.checkoutCompletes,
-      checkoutDropoff: item.checkoutDropoff,
-      targetBreakdown: Array.isArray(item.paths) ? item.paths.slice(0, 3) : [],
-      weakestPath,
-    });
-  });
-  const baseCommerceRecommendations = listRecommendations({ statuses: ["open", "in_progress"] })
-    .filter((item) => item.ruleId === "checkout-completion-dropoff")
-    .slice(0, 6);
-  const commerceProposalResults = baseCommerceRecommendations.map((rec) =>
-    createIncidentFollowupProposal({
-      actor: "ai:proposal",
-      targetType: "journey",
-      targetId: rec.targetId,
-      anomalyKind: "checkout_completion_dropoff",
-      severity: rec.severity === "critical" ? "critical" : "warning",
-      summary:
-        rec.reason ||
-        `Checkout completion is weak for source ${rec.targetId}; investigate handoff, trust signals, and product-match before sending more traffic into this path.`,
-      expectedImpact:
-        "Recover more orders from an existing acquisition or content source by tightening the handoff into checkout instead of only growing top-of-funnel traffic.",
-      applyHowTo:
-        "Review the source journey, compare it against a stronger source, tighten CTA and product-match cues, then observe the next 24h funnel window before scaling traffic.",
-      sourceRecommendationId: rec.id,
-      linkedRecommendationId: rec.id,
-      note: Array.isArray(rec?.context?.actionHints) && rec.context.actionHints[0] ? rec.context.actionHints[0] : null,
-      context: {
-        lookbackDays: 7,
-        sourceKey: rec.targetId,
-        targetPath: rec?.context?.targetPath ?? null,
-        targetBreakdown: Array.isArray(rec?.context?.targetBreakdown) ? rec.context.targetBreakdown : [],
-        weakestPath: rec?.context?.weakestPath ?? null,
-        actionHints: Array.isArray(rec?.context?.actionHints) ? rec.context.actionHints : [],
-        metricLabel: rec?.context?.metricLabel ?? "Checkout completion",
-      },
-    }),
-  );
-  if (weakCheckoutSources.length > 0) {
-    const worst = weakCheckoutSources[0];
-    alerts.push(
-      buildAlert(
-        worst.checkoutCompletionRate < 0.25 ? "critical" : "warning",
-        `Checkout completion is low for source ${worst.source}`,
-        `24h checkout starts ${worst.checkoutStarts}, completes ${worst.checkoutCompletes}, dropoff ${worst.checkoutDropoff}, completion ${(worst.checkoutCompletionRate * 100).toFixed(1)}%.`,
-      ),
-    );
-  }
-  if (paymentResults24h.failed + paymentResults24h.canceled >= 3) {
+  if (seoSyncHealth.health === "not_configured") {
     alerts.push(
       buildAlert(
         "warning",
-        "Payment issues are accumulating",
-        `24h paid ${paymentResults24h.paid}, authorized ${paymentResults24h.authorized}, failed ${paymentResults24h.failed}, canceled ${paymentResults24h.canceled}, requires action ${paymentResults24h.requiresAction}.`,
+        "Search Console sync is not configured",
+        `${seoSyncHealth.detail} ${seoSyncHealth.recoveryHint || ""}`.trim(),
       ),
     );
-  }
-  if (fulfillmentResults24h.processing >= 3 && fulfillmentResults24h.shipped + fulfillmentResults24h.delivered === 0) {
+  } else if (seoSyncHealth.health === "degraded" || seoSyncHealth.health === "warning") {
+    if (seoSyncStatus.lastRunStatus === "failure") {
+      alerts.push(
+        buildAlert(
+          seoSyncHealth.health === "degraded" ? "critical" : "warning",
+          "Search Console sync is failing",
+          `${seoSyncHealth.detail} ${seoSyncHealth.recoveryHint || ""}`.trim(),
+        ),
+      );
+      if (seoSyncStatus.nextAllowedRunAt) {
+        alerts.push(
+          buildAlert(
+            "warning",
+            "Search Console sync is backing off",
+            `Automatic retry is paused until ${seoSyncStatus.nextAllowedRunAt}.`,
+          ),
+        );
+      }
+    }
+    if (seoSyncStatus.lastRunStatus === "skipped" && seoSyncStatus.recentRuns?.[0]?.reason === "backoff_active") {
+      alerts.push(buildAlert("warning", "Search Console sync is backing off", seoSyncHealth.detail));
+    }
+  } else if (seoSyncHealth.health === "paused") {
     alerts.push(
       buildAlert(
         "warning",
-        "Fulfillment appears to be stalled",
-        `24h processing ${fulfillmentResults24h.processing}, shipped ${fulfillmentResults24h.shipped}, delivered ${fulfillmentResults24h.delivered}.`,
+        "Search Console sync is paused",
+        `${seoSyncHealth.detail} ${seoSyncHealth.recoveryHint || ""}`.trim(),
       ),
     );
+  } else if (seoSyncHealth.label === "not run yet") {
+    alerts.push(buildAlert("warning", "Search Console sync has not run yet", "Automation is enabled but no successful or failed sync has been recorded yet."));
   }
-  if (refundResults24h.backlog >= 3) {
-    alerts.push(
-      buildAlert(
-        "warning",
-        "Refund backlog is accumulating",
-        `24h refund requested ${refundResults24h.requested}, refunded ${refundResults24h.refunded}, backlog ${refundResults24h.backlog}.`,
-      ),
-    );
-  }
-  const commerceProposals = listRuleTuningProposals({ limit: 12 }).items
-    .filter((item) => item.type === "incident_followup" && item.anomalyKind === "checkout_completion_dropoff" && item.targetType === "journey")
-    .slice(0, 6);
-  commerceProposals.forEach((proposal) => {
-    if (proposal.status === "applied" && proposal.reviewSummary?.state === "risk") {
-      const sourceSummary = commerceCheckout.bySource.find((item) => item.source === proposal.targetId) ?? null;
-      createCommerceJourneyObservationFollowupRecommendation({
-        sourceProposalId: proposal.id,
-        targetBreakdown: Array.isArray(sourceSummary?.paths) ? sourceSummary.paths.slice(0, 3) : [],
-        weakestPath: sourceSummary?.paths?.[0] ?? null,
-      });
-    }
+  seoAlerts.forEach((item) => alerts.push(buildAlert(item.level, item.title, item.detail)));
+  (resultGovernanceRecommendationCandidates?.paymentIssues || []).forEach((candidate) => {
+    createPaymentIssueRecommendation(candidate);
   });
-  const commerceRecommendations = listRecommendations({ statuses: ["open", "in_progress"] })
-    .filter((item) => ["checkout-completion-dropoff", "checkout-completion-observation-followup"].includes(item.ruleId))
-    .slice(0, 8);
-  const basePaymentRecommendations = listRecommendations({ statuses: ["open", "in_progress"] })
-    .filter((item) => item.ruleId === "payment-result-issue")
-    .slice(0, 6);
-  const paymentProposalResults = basePaymentRecommendations.map((rec) =>
-    createIncidentFollowupProposal({
-      actor: "ai:proposal",
-      targetType: "journey",
-      targetId: rec.targetId,
-      anomalyKind: "payment_result_issue",
-      severity: rec.severity === "critical" ? "critical" : "warning",
-      summary:
-        rec.reason ||
-        `Payment issue ${rec.targetId} is visible in the latest window and needs a focused recovery proposal before more traffic enters the same payment path.`,
-      expectedImpact:
-        "Reduce payment-stage loss by separating provider-side failures, cancellations, and action-required cases from true checkout friction.",
-      applyHowTo:
-        "Review provider outcome patterns, inspect the top affected targets, tighten payment-step messaging or retry recovery, then re-check the next 24h payment window.",
-      sourceRecommendationId: rec.id,
-      linkedRecommendationId: rec.id,
-      note: Array.isArray(rec?.context?.actionHints) && rec.context.actionHints[0] ? rec.context.actionHints[0] : null,
-      context: {
-        lookbackDays: 7,
-        issueKey: rec?.context?.issueKey ?? rec.targetId,
-        targetPath: rec?.context?.targetPath ?? "/ops/monitoring",
-        targetBreakdown: Array.isArray(rec?.context?.targetBreakdown) ? rec.context.targetBreakdown : [],
-        weakestPath: rec?.context?.weakestPath ?? null,
-        actionHints: Array.isArray(rec?.context?.actionHints) ? rec.context.actionHints : [],
-        metricLabel: rec?.context?.metricLabel ?? "Payment issue",
-      },
-    }),
+  (resultGovernanceRecommendationCandidates?.fulfillmentBacklog || []).forEach((candidate) => {
+    createFulfillmentBacklogRecommendation(candidate);
+  });
+  (commerceRecommendationCandidates?.checkoutCompletionDropoff || []).forEach((candidate) => {
+    createCheckoutCompletionRecommendation(candidate);
+  });
+  const initialCommerceProposalSnapshot = commerceOps.getCommerceProposalSnapshot({ commerceCheckout });
+  const commerceProposalResults = (initialCommerceProposalSnapshot.commerceProposalCandidates || []).map((candidate) =>
+    createIncidentFollowupProposal(candidate),
   );
-  const paymentProposals = listRuleTuningProposals({ limit: 12 }).items
-    .filter((item) => item.type === "incident_followup" && item.anomalyKind === "payment_result_issue" && item.targetType === "journey")
-    .slice(0, 6);
-  paymentProposals.forEach((proposal) => {
-    if (proposal.status === "applied" && proposal.reviewSummary?.state === "risk") {
-      createPaymentObservationFollowupRecommendation({ sourceProposalId: proposal.id });
-    }
+  (commerceAlerts || []).forEach((item) => alerts.push(buildAlert(item.level, item.title, item.detail)));
+  (resultGovernanceAlerts || []).forEach((item) => alerts.push(buildAlert(item.level, item.title, item.detail)));
+  const refreshedCommerceProposalSnapshot = commerceOps.getCommerceProposalSnapshot({ commerceCheckout });
+  (refreshedCommerceProposalSnapshot.commerceObservationFollowupCandidates || []).forEach((candidate) => {
+    createCommerceJourneyObservationFollowupRecommendation(candidate);
   });
-  const paymentRecommendations = listRecommendations({ statuses: ["open", "in_progress"] })
-    .filter((item) => ["payment-result-issue", "payment-observation-followup"].includes(item.ruleId))
-    .slice(0, 8);
-  const baseFulfillmentRecommendations = listRecommendations({ statuses: ["open", "in_progress"] })
-    .filter((item) => item.ruleId === "fulfillment-backlog")
-    .slice(0, 6);
-  const fulfillmentProposalResults = baseFulfillmentRecommendations.map((rec) =>
-    createIncidentFollowupProposal({
-      actor: "ai:proposal",
-      targetType: "journey",
-      targetId: rec.targetId,
-      anomalyKind: "fulfillment_backlog",
-      severity: rec.severity === "critical" ? "critical" : "warning",
-      summary:
-        rec.reason ||
-        "Fulfillment processing backlog is visible in the latest window and needs a focused ops proposal before more paid orders stall after payment.",
-      expectedImpact:
-        "Reduce post-payment stall by restoring the handoff from processing into shipped and delivered states before backlog spreads across more orders.",
-      applyHowTo:
-        "Review the top affected fulfillment paths, inspect warehouse or shipment handoff delays, then re-check the next 24h fulfillment window before routing more volume.",
-      sourceRecommendationId: rec.id,
-      linkedRecommendationId: rec.id,
-      note: Array.isArray(rec?.context?.actionHints) && rec.context.actionHints[0] ? rec.context.actionHints[0] : null,
-      context: {
-        lookbackDays: 7,
-        stageKey: rec?.context?.stageKey ?? rec.targetId,
-        targetPath: rec?.context?.targetPath ?? "/ops/monitoring",
-        targetBreakdown: Array.isArray(rec?.context?.targetBreakdown) ? rec.context.targetBreakdown : [],
-        weakestPath: rec?.context?.weakestPath ?? null,
-        actionHints: Array.isArray(rec?.context?.actionHints) ? rec.context.actionHints : [],
-        metricLabel: rec?.context?.metricLabel ?? "Fulfillment backlog",
-      },
-    }),
+  const finalCommerceProposalSnapshot = commerceOps.getCommerceProposalSnapshot({ commerceCheckout });
+  const commerceRecommendations = finalCommerceProposalSnapshot.commerceRecommendations || [];
+  const commerceProposals = finalCommerceProposalSnapshot.commerceProposals || [];
+  const initialResultGovernanceWorkflowSnapshot = resultGovernanceOps.getResultGovernanceWorkflowSnapshot();
+  const paymentProposalResults = (initialResultGovernanceWorkflowSnapshot.proposalCandidates?.payment || []).map((candidate) =>
+    createIncidentFollowupProposal(candidate),
   );
-  const fulfillmentProposals = listRuleTuningProposals({ limit: 12 }).items
-    .filter((item) => item.type === "incident_followup" && item.anomalyKind === "fulfillment_backlog" && item.targetType === "journey")
-    .slice(0, 6);
-  fulfillmentProposals.forEach((proposal) => {
-    if (proposal.status === "applied" && proposal.reviewSummary?.state === "risk") {
-      createFulfillmentObservationFollowupRecommendation({ sourceProposalId: proposal.id });
-    }
+  const fulfillmentProposalResults = (initialResultGovernanceWorkflowSnapshot.proposalCandidates?.fulfillment || []).map((candidate) =>
+    createIncidentFollowupProposal(candidate),
+  );
+  const refreshedResultGovernanceWorkflowSnapshot = resultGovernanceOps.getResultGovernanceWorkflowSnapshot();
+  (refreshedResultGovernanceWorkflowSnapshot.observationFollowupCandidates?.payment || []).forEach((candidate) => {
+    createPaymentObservationFollowupRecommendation(candidate);
   });
-  const fulfillmentRecommendations = listRecommendations({ statuses: ["open", "in_progress"] })
-    .filter((item) => ["fulfillment-backlog", "fulfillment-observation-followup"].includes(item.ruleId))
-    .slice(0, 8);
+  (refreshedResultGovernanceWorkflowSnapshot.observationFollowupCandidates?.fulfillment || []).forEach((candidate) => {
+    createFulfillmentObservationFollowupRecommendation(candidate);
+  });
+  const finalResultGovernanceWorkflowSnapshot = resultGovernanceOps.getResultGovernanceWorkflowSnapshot();
+  const paymentRecommendations = finalResultGovernanceWorkflowSnapshot.lanes?.payment?.recommendations || [];
+  const paymentProposals = finalResultGovernanceWorkflowSnapshot.lanes?.payment?.proposals || [];
+  const fulfillmentRecommendations = finalResultGovernanceWorkflowSnapshot.lanes?.fulfillment?.recommendations || [];
+  const fulfillmentProposals = finalResultGovernanceWorkflowSnapshot.lanes?.fulfillment?.proposals || [];
+  const resultGovernanceRuntimeJudgment = buildResultGovernanceRuntimeJudgment({
+    paymentResults24h,
+    fulfillmentResults24h,
+    refundResults24h,
+    workflowSnapshot: finalResultGovernanceWorkflowSnapshot,
+  });
+  const resultGovernanceLaneSummary = buildResultGovernanceLaneSummary({
+    paymentResults24h,
+    fulfillmentResults24h,
+    refundResults24h,
+    workflowSnapshot: finalResultGovernanceWorkflowSnapshot,
+  });
   if (staleRecommendations.length > 0) {
     alerts.push(
       buildAlert(
@@ -1978,11 +4215,94 @@ async function buildMonitoringSummary({ targetType, actor } = {}) {
     recommendations: commerceRecommendations,
     proposals: commerceProposals,
   });
+  const commerceHealthSummary = buildCommerceHealthSummary({
+    commerceCheckout,
+    weakCheckoutSources,
+    commerceGovernance,
+  });
+  const commerceRuntimeJudgment = buildCommerceRuntimeJudgment({
+    commerceCheckout,
+    weakCheckoutSources,
+    commerceGovernance,
+    commerceHealthSummary,
+  });
+  const commerceSourceSummary = buildCommerceSourceSummary({
+    commerceCheckout,
+    commerceRecommendations,
+    commerceProposals,
+  });
+  const governanceOverview = buildTopLevelGovernanceOverview({
+    seoRuntimeJudgment,
+    seoSyncRecoveryReview,
+    resultGovernanceRuntimeJudgment,
+    resultGovernanceLaneSummary,
+    commerceRuntimeJudgment,
+    commerceHealthSummary,
+    commerceSourceSummary,
+  });
+  const growthLoopOverview = buildGrowthLoopOverview({
+    seoPerformance,
+    seoRuntimeJudgment,
+    commerceCheckout,
+    commerceRuntimeJudgment,
+    commerceSourceSummary,
+    purchase: {
+      misalignedTargetsCount: purchaseDiagnostics.length,
+      topGaps: purchaseDiagnostics.slice(0, 5),
+      thresholdAbsGap: thresholds.purchaseGapAbs,
+    },
+    governanceOverview,
+  });
+  const geoOverview = buildGeoOverview({
+    seoPerformance,
+    seoRuntimeJudgment,
+    aiConcierge,
+    aiConciergeGovernance,
+  });
   const paymentGovernance = buildPaymentGovernanceSummary({
     recommendations: paymentRecommendations,
     proposals: paymentProposals,
   });
   const governanceGroups = buildGovernanceGroups({ aiConciergeGovernance, commerceGovernance, paymentGovernance });
+  const growthExperimentOverview = buildGrowthExperimentOverview({ governanceGroups });
+  const todaysBestBet = buildTodaysBestBet({
+    governanceOverview,
+    growthLoopOverview,
+    geoOverview,
+    growthExperimentOverview,
+    commerceSourceSummary,
+    commerceProposals,
+  });
+  const decisionTimeline = buildDecisionTimeline({
+    events: listEvents(),
+    todaysBestBet,
+    governanceOverview,
+    growthLoopOverview,
+    geoOverview,
+    growthExperimentOverview,
+  });
+  const snapshotDate = String(generatedAt).slice(0, 10);
+  upsertDailyMonitoringSnapshot({
+    date: snapshotDate,
+    recordedAt: generatedAt,
+    todaysBestBet,
+    governanceOverview,
+    growthLoopOverview,
+    geoOverview,
+    growthExperimentOverview,
+  });
+  const dailySnapshotHistory = buildDailySnapshotHistory({
+    snapshots: listDailyMonitoringSnapshots(7),
+  });
+  const weeklyOperatingReview = buildWeeklyOperatingReview({
+    dailySnapshotHistory,
+    governanceOverview,
+    growthLoopOverview,
+    geoOverview,
+    growthExperimentOverview,
+    commerceSourceSummary,
+    commerceProposals,
+  });
   const publishAlertLevel = publishingAlertLevel({
     warningPublishes24h: warningPublishes24h.length,
     blockedPublishes24h: blockedPublishes24h.length,
@@ -2017,19 +4337,6 @@ async function buildMonitoringSummary({ targetType, actor } = {}) {
       ),
     );
   }
-  if (purchaseDiagnostics.length > 0) {
-    const worstGap = purchaseDiagnostics[0];
-    const purchaseAlertLevel =
-      worstGap.status === "missing_snapshot" ? "warning" : Math.abs(worstGap.gap) >= thresholds.purchaseGapAbs.critical ? "critical" : "warning";
-    alerts.push(
-      buildAlert(
-        purchaseAlertLevel,
-        "Purchase reconciliation needs review",
-        `${purchaseDiagnostics.length} target(s) show purchase mismatch or missing snapshots. Largest gap: ${worstGap.title} (${worstGap.gap > 0 ? "+" : ""}${worstGap.gap}).`,
-      ),
-    );
-  }
-
   // 落盘：把 monitoring 生成的告警同步到 ops alert queue，供值班回看/ack。
   // 非阻断：即使持久化失败，也不影响 monitoring summary 返回。
   try {
@@ -2066,8 +4373,41 @@ async function buildMonitoringSummary({ targetType, actor } = {}) {
       consecutiveBatchFailures: runtime.consecutiveBatchFailures,
       lastBatchRunAt: runtime.lastBatchRun?.at ?? null,
       counts: runtime.counts,
+      seoSync: {
+        enabled: seoSyncConfig.enabled,
+        configured: seoSyncConfig.configured,
+        intervalMinutes: seoSyncConfig.intervalMinutes,
+        failureBaseDelayMinutes: seoSyncConfig.failureBaseDelayMinutes,
+        failureMaxDelayMinutes: seoSyncConfig.failureMaxDelayMinutes,
+        runOnStart: seoSyncConfig.runOnStart,
+        siteUrl: seoSyncConfig.siteUrl,
+        missing: seoSyncConfig.missing,
+        health: seoSyncHealth.health,
+        healthLabel: seoSyncHealth.label,
+        healthDetail: seoSyncHealth.detail,
+        recoveryHint: seoSyncHealth.recoveryHint || seoSyncStatus.recoveryHint || null,
+        lastErrorCategory: seoSyncStatus.lastErrorCategory,
+        lastErrorCode: seoSyncStatus.lastErrorCode,
+        lastErrorRetryable: seoSyncStatus.lastErrorRetryable,
+        ...seoSyncStatus,
+        recentRuns: Array.isArray(seoSyncStatus.recentRuns) ? seoSyncStatus.recentRuns.slice(0, 10) : [],
+      },
       dependencies,
     },
+    governanceOverview,
+    growthLoopOverview,
+    geoOverview,
+    growthExperimentOverview,
+    todaysBestBet,
+    decisionTimeline,
+    dailySnapshotHistory,
+    weeklyOperatingReview,
+    seoRuntimeJudgment,
+    seoSyncHistory,
+    seoSyncControlAudit,
+    seoSyncRecoveryReview,
+    seoFreshness,
+    seoImportDiagnostics,
     seoPerformance,
     workflow: {
       openCount: activeRecommendations.filter((item) => item.status === "open").length,
@@ -2117,6 +4457,11 @@ async function buildMonitoringSummary({ targetType, actor } = {}) {
       },
     },
     refundResults24h,
+    resultGovernanceRuntimeJudgment,
+    resultGovernanceLaneSummary,
+    commerceHealthSummary,
+    commerceRuntimeJudgment,
+    commerceSourceSummary,
     commerceCheckout: {
       ...commerceCheckout,
       recommendations: commerceRecommendations,

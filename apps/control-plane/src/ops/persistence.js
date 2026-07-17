@@ -24,6 +24,9 @@ function emptyState() {
     customerNotifications: [],
     supportCases: [],
     seoMetrics: [],
+    seoImportRuns: [],
+    seoImportReplay: null,
+    seoSyncStatus: null,
   };
 }
 
@@ -47,6 +50,9 @@ function loadState() {
       customerNotifications: Array.isArray(parsed.customerNotifications) ? parsed.customerNotifications : [],
       supportCases: Array.isArray(parsed.supportCases) ? parsed.supportCases : [],
       seoMetrics: Array.isArray(parsed.seoMetrics) ? parsed.seoMetrics : [],
+      seoImportRuns: Array.isArray(parsed.seoImportRuns) ? parsed.seoImportRuns : [],
+      seoImportReplay: parsed.seoImportReplay ?? null,
+      seoSyncStatus: parsed.seoSyncStatus ?? null,
     };
   } catch {
     return emptyState();

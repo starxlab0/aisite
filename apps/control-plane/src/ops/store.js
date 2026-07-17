@@ -1,11 +1,16 @@
 const crypto = require("crypto");
 const { loadState, saveState } = require("./persistence");
+const { createCommerceDomain } = require("./commerce-domain");
+const { createSeoDomain } = require("./seo-domain");
 
 const persisted = loadState();
 const opsDrafts = new Map(
   (Array.isArray(persisted.drafts) ? persisted.drafts : []).map((item) => [item.id, item]),
 );
 const opsEvents = Array.isArray(persisted.events) ? persisted.events : [];
+const opsPlaybooks = new Map(
+  (Array.isArray(persisted.playbooks) ? persisted.playbooks : []).map((item) => [item.id, item]),
+);
 const repoChanges = new Map(
   (Array.isArray(persisted.repoChanges) ? persisted.repoChanges : []).map((item) => [item.id, item]),
 );
@@ -16,6 +21,9 @@ const opsAlerts = Array.isArray(persisted.alerts) ? persisted.alerts : [];
 const customerNotifications = Array.isArray(persisted.customerNotifications) ? persisted.customerNotifications : [];
 const supportCases = Array.isArray(persisted.supportCases) ? persisted.supportCases : [];
 const seoMetrics = Array.isArray(persisted.seoMetrics) ? persisted.seoMetrics : [];
+const seoImportRuns = Array.isArray(persisted.seoImportRuns) ? persisted.seoImportRuns : [];
+let seoImportReplay = persisted.seoImportReplay ?? null;
+let seoSyncStatus = persisted.seoSyncStatus ?? null;
 
 function now() {
   return new Date().toISOString();
@@ -25,17 +33,364 @@ function nextId(prefix) {
   return `${prefix}_${crypto.randomBytes(8).toString("hex")}`;
 }
 
+function getSeoSyncStatus() {
+  return seoSyncStatus
+    ? {
+        ...seoSyncStatus,
+        recentRuns: Array.isArray(seoSyncStatus.recentRuns) ? seoSyncStatus.recentRuns.slice(0, 20) : [],
+      }
+    : {
+        lastRunStatus: null,
+        lastRunAt: null,
+        lastSuccessAt: null,
+        lastFailureAt: null,
+        lastSkippedAt: null,
+        consecutiveFailures: 0,
+        lastError: null,
+        lastErrorCategory: null,
+        lastErrorCode: null,
+        lastErrorRetryable: null,
+        recoveryHint: null,
+        lastFetchedRows: 0,
+        lastIngestedRows: 0,
+        lastRequest: null,
+        lastActor: null,
+        nextAllowedRunAt: null,
+        backoffMinutes: 0,
+        paused: false,
+        pausedAt: null,
+        pausedBy: null,
+        recentRuns: [],
+        source: "search_console_api",
+      };
+}
+
+function recordSeoSyncRun({
+  status,
+  actor,
+  request,
+  fetchedRows = 0,
+  ingestedRows = 0,
+  error = null,
+  errorCategory = null,
+  errorCode = null,
+  errorRetryable = null,
+  recoveryHint = null,
+  source = "search_console_api",
+  nextAllowedRunAt = null,
+  backoffMinutes = 0,
+  reason = null,
+} = {}) {
+  const previous = getSeoSyncStatus();
+  const runAt = now();
+  const normalizedStatus = status === "success" ? "success" : status === "skipped" ? "skipped" : "failure";
+  const recentRuns = [
+    {
+      status: normalizedStatus,
+      at: runAt,
+      actor: actor || null,
+      fetchedRows: normalizedStatus === "success" ? fetchedRows : 0,
+      ingestedRows: normalizedStatus === "success" ? ingestedRows : 0,
+      error: normalizedStatus === "failure" ? String(error || "search_console_sync_failed") : null,
+      errorCategory: normalizedStatus === "failure" ? String(errorCategory || "unknown") : null,
+      errorCode: normalizedStatus === "failure" ? String(errorCode || "unknown") : null,
+      errorRetryable: normalizedStatus === "failure" ? Boolean(errorRetryable) : null,
+      recoveryHint: normalizedStatus === "failure" ? String(recoveryHint || "") || null : null,
+      reason: normalizedStatus === "skipped" ? String(reason || "search_console_sync_skipped") : null,
+      request: request
+        ? {
+            siteUrl: request.siteUrl ?? null,
+            startDate: request.startDate ?? null,
+            endDate: request.endDate ?? null,
+          }
+        : null,
+    },
+    ...(Array.isArray(previous.recentRuns) ? previous.recentRuns : []),
+  ].slice(0, 20);
+  seoSyncStatus = {
+    source,
+    lastRunStatus: normalizedStatus,
+    lastRunAt: runAt,
+    lastSuccessAt: normalizedStatus === "success" ? runAt : previous.lastSuccessAt,
+    lastFailureAt: normalizedStatus === "failure" ? runAt : previous.lastFailureAt,
+    lastSkippedAt: normalizedStatus === "skipped" ? runAt : previous.lastSkippedAt,
+    consecutiveFailures: normalizedStatus === "success" ? 0 : normalizedStatus === "failure" ? (previous.consecutiveFailures || 0) + 1 : previous.consecutiveFailures || 0,
+    lastError: normalizedStatus === "failure" ? String(error || "search_console_sync_failed") : normalizedStatus === "success" ? null : previous.lastError ?? null,
+    lastErrorCategory: normalizedStatus === "failure" ? String(errorCategory || "unknown") : normalizedStatus === "success" ? null : previous.lastErrorCategory ?? null,
+    lastErrorCode: normalizedStatus === "failure" ? String(errorCode || "unknown") : normalizedStatus === "success" ? null : previous.lastErrorCode ?? null,
+    lastErrorRetryable:
+      normalizedStatus === "failure" ? Boolean(errorRetryable) : normalizedStatus === "success" ? null : previous.lastErrorRetryable ?? null,
+    recoveryHint:
+      normalizedStatus === "failure" ? String(recoveryHint || "") || null : normalizedStatus === "success" ? null : previous.recoveryHint ?? null,
+    lastFetchedRows: normalizedStatus === "success" ? fetchedRows : previous.lastFetchedRows || 0,
+    lastIngestedRows: normalizedStatus === "success" ? ingestedRows : previous.lastIngestedRows || 0,
+    lastRequest: request
+      ? {
+          siteUrl: request.siteUrl ?? null,
+          startDate: request.startDate ?? null,
+          endDate: request.endDate ?? null,
+          rowLimit: request.rowLimit ?? null,
+          searchType: request.searchType ?? null,
+          dataState: request.dataState ?? null,
+          aggregationType: request.aggregationType ?? null,
+          dimensions: Array.isArray(request.dimensions) ? request.dimensions.slice(0, 5) : [],
+        }
+      : previous.lastRequest ?? null,
+    lastActor: actor || null,
+    nextAllowedRunAt: normalizedStatus === "failure" ? nextAllowedRunAt || null : normalizedStatus === "success" ? null : previous.nextAllowedRunAt ?? null,
+    backoffMinutes: normalizedStatus === "failure" ? backoffMinutes || 0 : normalizedStatus === "success" ? 0 : previous.backoffMinutes || 0,
+    paused: previous.paused || false,
+    pausedAt: previous.pausedAt || null,
+    pausedBy: previous.pausedBy || null,
+    recentRuns,
+  };
+  persist();
+  return getSeoSyncStatus();
+}
+
+function setSeoSyncPaused({ paused, actor } = {}) {
+  const previous = getSeoSyncStatus();
+  seoSyncStatus = {
+    ...previous,
+    paused: Boolean(paused),
+    pausedAt: paused ? now() : null,
+    pausedBy: paused ? actor || null : null,
+  };
+  persist();
+  return getSeoSyncStatus();
+}
+
+function clearSeoSyncBackoff({ actor } = {}) {
+  const previous = getSeoSyncStatus();
+  seoSyncStatus = {
+    ...previous,
+    nextAllowedRunAt: null,
+    backoffMinutes: 0,
+    lastActor: actor || previous.lastActor || null,
+  };
+  persist();
+  return getSeoSyncStatus();
+}
+
 function persist() {
   saveState({
     drafts: Array.from(opsDrafts.values()),
     events: opsEvents,
+    playbooks: Array.from(opsPlaybooks.values()),
     previewTokens: Array.from(previewTokens.values()),
     repoChanges: Array.from(repoChanges.values()),
     alerts: opsAlerts,
     customerNotifications,
     supportCases,
     seoMetrics,
+    seoImportRuns,
+    seoImportReplay,
+    seoSyncStatus,
   });
+}
+
+function playbookIdForKey(key) {
+  const normalized = String(key || "").trim();
+  if (!normalized) return nextId("pb");
+  const digest = crypto.createHash("sha1").update(normalized).digest("hex").slice(0, 16);
+  return `pb_${digest}`;
+}
+
+function findPlaybookByKey(key) {
+  const normalized = String(key || "").trim();
+  if (!normalized) return null;
+  for (const item of opsPlaybooks.values()) {
+    if (String(item?.key || "") === normalized) return item;
+  }
+  return null;
+}
+
+function upsertPlaybook({
+  key,
+  title,
+  source,
+  targetType,
+  steps,
+  observationWindow,
+  observationMetrics,
+  examples,
+  actor = "system",
+} = {}) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return null;
+  const existing = findPlaybookByKey(normalizedKey);
+  const nowAt = now();
+  const record = existing ?? {
+    id: playbookIdForKey(normalizedKey),
+    key: normalizedKey,
+    status: "draft",
+    createdAt: nowAt,
+    createdBy: actor,
+  };
+  record.title = String(title || record.title || `Playbook: ${normalizedKey}`).slice(0, 120);
+  record.source = String(source || record.source || "");
+  record.targetType = String(targetType || record.targetType || "");
+  record.steps = Array.isArray(steps) ? steps.slice(0, 10) : Array.isArray(record.steps) ? record.steps : [];
+  record.observationWindow = String(observationWindow || record.observationWindow || "next 24-72h");
+  record.observationMetrics = Array.isArray(observationMetrics)
+    ? observationMetrics.slice(0, 8)
+    : Array.isArray(record.observationMetrics)
+      ? record.observationMetrics
+      : [];
+  record.examples = Array.isArray(examples) ? examples.slice(0, 5) : Array.isArray(record.examples) ? record.examples : [];
+  record.applications = Array.isArray(record.applications) ? record.applications : [];
+  record.updatedAt = nowAt;
+  record.updatedBy = actor;
+
+  opsPlaybooks.set(record.id, record);
+  persist();
+  return record;
+}
+
+function getPlaybook(id) {
+  if (!id) return null;
+  return opsPlaybooks.get(String(id)) ?? null;
+}
+
+function listPlaybooks({ limit = 50 } = {}) {
+  const items = Array.from(opsPlaybooks.values())
+    .slice()
+    .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))
+    .slice(0, Math.min(100, Math.max(1, Number(limit || 50))));
+  return { items, total: opsPlaybooks.size };
+}
+
+function targetOpsPath(targetType, targetId) {
+  const type = String(targetType || "");
+  const id = targetId == null ? "" : String(targetId);
+  if (type === "product" && id) return `/ops/product/${id}`;
+  if (type === "collection" && id) return `/ops/collection/${id}`;
+  if (type === "faq" && id.includes(":")) {
+    const [faqType, faqId] = id.split(":");
+    return `/ops/faq/${faqType}/${faqId}`;
+  }
+  if (type === "guide" && id) return `/ops?type=guide&q=${encodeURIComponent(id)}`;
+  if (type) return `/ops/monitoring?type=${encodeURIComponent(type)}`;
+  return "/ops/monitoring";
+}
+
+function buildPlaybookApplicationNextAction({ playbook, targetType, targetId, targetLabel } = {}) {
+  const path = targetOpsPath(targetType || playbook?.targetType, targetId);
+  const label = String(targetLabel || targetId || targetType || playbook?.title || "this application");
+  return {
+    code: targetId ? "open_target_workspace" : "review_monitoring_lane",
+    actionPath: path,
+    actionLabel: targetId ? "Open target workspace" : "Review monitoring lane",
+    description: targetId
+      ? `Continue ${label} in the target workspace and decide whether to draft, promote, or transition next.`
+      : `Review the monitoring lane for ${label} and choose the next draft or transition step.`,
+  };
+}
+
+function applyPlaybook({
+  id,
+  actor = "system",
+  targetType,
+  targetId,
+  targetLabel,
+  source,
+  note,
+} = {}) {
+  const playbook = getPlaybook(id);
+  if (!playbook) return null;
+  const application = {
+    id: nextId("pba"),
+    status: "draft",
+    createdAt: now(),
+    updatedAt: now(),
+    actor,
+    source: String(source || playbook.source || ""),
+    targetType: String(targetType || playbook.targetType || ""),
+    targetId: targetId == null ? null : String(targetId),
+    targetLabel: String(targetLabel || ""),
+    note: note ? String(note).slice(0, 500) : null,
+    steps: Array.isArray(playbook.steps) ? playbook.steps.slice(0, 10) : [],
+    observationWindow: String(playbook.observationWindow || "next 24-72h"),
+    observationMetrics: Array.isArray(playbook.observationMetrics) ? playbook.observationMetrics.slice(0, 8) : [],
+  };
+  application.nextAction = buildPlaybookApplicationNextAction({
+    playbook,
+    targetType: application.targetType,
+    targetId: application.targetId,
+    targetLabel: application.targetLabel,
+  });
+  playbook.applications = [application, ...(Array.isArray(playbook.applications) ? playbook.applications : [])].slice(0, 20);
+  playbook.updatedAt = now();
+  playbook.updatedBy = actor;
+  opsPlaybooks.set(playbook.id, playbook);
+  persist();
+  return { playbook, application };
+}
+
+function transitionPlaybookApplication({
+  playbookId,
+  applicationId,
+  actor = "system",
+  nextStatus,
+  note,
+} = {}) {
+  const playbook = getPlaybook(playbookId);
+  if (!playbook) return null;
+  const apps = Array.isArray(playbook.applications) ? playbook.applications : [];
+  const index = apps.findIndex((item) => String(item?.id || "") === String(applicationId || ""));
+  if (index < 0) return null;
+
+  const allowed = {
+    draft: ["in_review", "cancelled"],
+    in_review: ["executed", "cancelled"],
+    executed: ["observing", "cancelled"],
+    observing: ["succeeded", "regressed", "cancelled"],
+    regressed: ["in_review", "cancelled"],
+    succeeded: ["cancelled"],
+    cancelled: [],
+  };
+  const current = apps[index];
+  const from = String(current.status || "draft");
+  const to = String(nextStatus || "");
+  if (!to) return { playbook, application: current, blocked: true, message: "missing_next_status" };
+  if (!Array.isArray(allowed[from]) || !allowed[from].includes(to)) {
+    return { playbook, application: current, blocked: true, message: `invalid_transition:${from}->${to}` };
+  }
+
+  const updatedAt = now();
+  const next = {
+    ...current,
+    status: to,
+    updatedAt,
+    updatedBy: actor,
+    lastNote: note ? String(note).slice(0, 500) : null,
+  };
+  next.transitions = Array.isArray(current.transitions) ? current.transitions : [];
+  next.transitions = [
+    {
+      at: updatedAt,
+      actor,
+      from,
+      to,
+      note: note ? String(note).slice(0, 500) : null,
+    },
+    ...next.transitions,
+  ].slice(0, 20);
+  next.nextAction = buildPlaybookApplicationNextAction({
+    playbook,
+    targetType: next.targetType,
+    targetId: next.targetId,
+    targetLabel: next.targetLabel,
+  });
+
+  apps[index] = next;
+  playbook.applications = apps;
+  playbook.updatedAt = updatedAt;
+  playbook.updatedBy = actor;
+  opsPlaybooks.set(playbook.id, playbook);
+  persist();
+
+  return { playbook, application: next };
 }
 
 function createEvent(event) {
@@ -86,6 +441,19 @@ function normalizeString(value) {
 function normalizeNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeRate(value, fallback = 0) {
+  if (value == null || value === "") return fallback;
+  const raw = String(value).trim();
+  if (!raw) return fallback;
+  if (raw.endsWith("%")) {
+    const parsedPct = Number(raw.slice(0, -1));
+    return Number.isFinite(parsedPct) ? parsedPct / 100 : fallback;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return parsed > 1 ? parsed / 100 : parsed;
 }
 
 function alertKey({ source, level, title, targetType, targetId }) {
@@ -1095,6 +1463,14 @@ function listRepoChanges(filters = {}) {
   });
 }
 
+function findSeoTargetRegistryRepoChange({ targetType, targetId } = {}) {
+  return (
+    listRepoChanges({ targetType, targetId }).find(
+      (item) => item.kind === "seo_target_registry" && item.status !== "cancelled" && item.status !== "reverted",
+    ) ?? null
+  );
+}
+
 function updateRepoChange(id, patch = {}) {
   const existing = repoChanges.get(id);
   if (!existing) return null;
@@ -1150,129 +1526,242 @@ function transitionRepoChange({ id, actor, nextStatus, note, patch } = {}) {
   return next;
 }
 
-function normalizeDateKey(value) {
-  const raw = normalizeString(value);
-  if (!raw) return "";
-  if (raw.length >= 10) return raw.slice(0, 10);
-  return raw;
-}
+const SEO_OPS_CONTRACT_METHODS = Object.freeze([
+  "ingestSeoMetrics",
+  "importSeoMetricsFromSearchConsole",
+  "replayLatestSeoImport",
+  "listSeoMetrics",
+  "getSeoMetricsWindowSummary",
+  "getSeoMetricsFreshnessSummary",
+  "getSeoImportDiagnostics",
+  "getSeoGeoRecommendationSummary",
+  "getSeoMonitoringSnapshot",
+  "findSeoTargetRegistryRepoChange",
+]);
 
-function seoMetricKey({ date, targetType, targetId, pagePath, query } = {}) {
-  const d = normalizeDateKey(date);
-  const parts = [d, normalizeString(targetType), normalizeString(targetId), normalizeString(pagePath), normalizeString(query)];
-  return parts.join("|");
-}
+const SEO_OPS_COMPAT_EXPORTS = Object.freeze([
+  "ingestSeoMetrics",
+  "importSeoMetricsFromSearchConsole",
+  "replayLatestSeoImport",
+  "listSeoMetrics",
+  "getSeoMetricsWindowSummary",
+  "getSeoMetricsFreshnessSummary",
+  "getSeoImportDiagnostics",
+  "getSeoGeoRecommendationSummary",
+  "getSeoMonitoringSnapshot",
+  "findSeoTargetRegistryRepoChange",
+]);
 
-function upsertSeoMetricRow({ actor, row, source } = {}) {
-  if (!row) return null;
-  const date = normalizeDateKey(row.date || row.day || row.at);
-  const targetType = normalizeString(row.targetType);
-  const targetId = normalizeString(row.targetId);
-  if (!date || !targetType || !targetId) return null;
-  const pagePath = normalizeString(row.pagePath || row.page || "");
-  const query = normalizeString(row.query || "");
-  const impressions = Math.max(0, normalizeNumber(row.impressions));
-  const clicks = Math.max(0, normalizeNumber(row.clicks));
-  const ctr = row.ctr != null ? Math.max(0, normalizeNumber(row.ctr)) : impressions > 0 ? clicks / impressions : 0;
-  const position = row.position != null ? normalizeNumber(row.position, null) : null;
-
-  const key = seoMetricKey({ date, targetType, targetId, pagePath, query });
-  const existingIdx = seoMetrics.findIndex((item) => item.key === key);
-  const record = {
-    id: existingIdx >= 0 ? seoMetrics[existingIdx].id : nextId("seo"),
-    key,
-    date,
-    targetType,
-    targetId,
-    pagePath: pagePath || null,
-    query: query || null,
-    impressions,
-    clicks,
-    ctr,
-    position,
-    source: normalizeString(source || row.source || "manual"),
-    ingestedBy: actor || "anonymous",
-    updatedAt: now(),
-    createdAt: existingIdx >= 0 ? seoMetrics[existingIdx].createdAt : now(),
-  };
-  if (existingIdx >= 0) seoMetrics[existingIdx] = record;
-  else seoMetrics.unshift(record);
-  return record;
-}
-
-function ingestSeoMetrics({ actor, rows, source } = {}) {
-  const items = Array.isArray(rows) ? rows : [];
-  const created = [];
-  items.forEach((row) => {
-    const saved = upsertSeoMetricRow({ actor, row, source });
-    if (saved) created.push(saved);
-  });
-  if (created.length) persist();
-  return { ingested: created.length };
-}
-
-function listSeoMetrics(filters = {}) {
-  const targetType = normalizeString(filters.targetType);
-  const targetId = normalizeString(filters.targetId);
-  const sinceDays = normalizeNumber(filters.sinceDays, 30);
-  const untilTs = Date.now();
-  const sinceTs = untilTs - Math.max(1, sinceDays) * 24 * 60 * 60 * 1000;
-  const limit = Math.min(500, Math.max(1, normalizeNumber(filters.limit, 200)));
-
-  const items = seoMetrics
-    .filter((row) => (targetType ? row.targetType === targetType : true))
-    .filter((row) => (targetId ? row.targetId === targetId : true))
-    .filter((row) => {
-      const ts = Date.parse(String(row.date || ""));
-      return Number.isFinite(ts) ? ts >= sinceTs && ts <= untilTs : true;
-    })
-    .slice(0, limit);
-  return { items, total: items.length };
-}
-
-function aggregateSeoWindow({ targetType, targetId, sinceTs, untilTs } = {}) {
-  let impressions = 0;
-  let clicks = 0;
-  let weightedPosition = 0;
-  let positionWeight = 0;
-  seoMetrics.forEach((row) => {
-    const ts = Date.parse(String(row.date || ""));
-    if (!Number.isFinite(ts) || ts < sinceTs || ts > untilTs) return;
-    if (row.targetType !== targetType || row.targetId !== targetId) return;
-    impressions += row.impressions || 0;
-    clicks += row.clicks || 0;
-    if (row.position != null && row.impressions) {
-      weightedPosition += row.position * row.impressions;
-      positionWeight += row.impressions;
-    }
-  });
-  const ctr = impressions > 0 ? clicks / impressions : 0;
-  const position = positionWeight > 0 ? weightedPosition / positionWeight : null;
-  return { impressions, clicks, ctr, position };
-}
-
-function getSeoMetricsWindowSummary({ targetType, targetId, windowDays } = {}) {
-  const w = Math.max(1, normalizeNumber(windowDays, 7));
-  const untilTs = Date.now();
-  const windowMs = w * 24 * 60 * 60 * 1000;
-  const current = aggregateSeoWindow({ targetType, targetId, sinceTs: untilTs - windowMs, untilTs });
-  const previous = aggregateSeoWindow({ targetType, targetId, sinceTs: untilTs - windowMs * 2, untilTs: untilTs - windowMs });
-  return {
-    windowDays: w,
-    current,
-    previous,
-    delta: {
-      impressions: current.impressions - previous.impressions,
-      clicks: current.clicks - previous.clicks,
-      ctr: current.ctr - previous.ctr,
-      position: current.position != null && previous.position != null ? current.position - previous.position : null,
+const seoOps = Object.freeze({
+  ...createSeoDomain({
+    seoMetrics,
+    seoImportRuns,
+    getSeoImportReplay: () => seoImportReplay,
+    setSeoImportReplayState: (next) => {
+      seoImportReplay = next;
     },
-  };
+    getRepoChanges: () => Array.from(repoChanges.values()),
+    findSeoTargetRegistryRepoChange,
+    persist,
+    nextId,
+    now,
+    normalizeString,
+    normalizeNumber,
+  }),
+  findSeoTargetRegistryRepoChange,
+});
+
+const seoOpsContract = Object.freeze({
+  entry: "seoOps",
+  methods: SEO_OPS_CONTRACT_METHODS,
+  compatExports: SEO_OPS_COMPAT_EXPORTS,
+});
+
+const COMMERCE_OPS_CONTRACT_METHODS = Object.freeze([
+  "summarizeCommerceCheckout",
+  "getPurchaseMonitoringSnapshot",
+  "getCommerceCheckoutSnapshot",
+  "getCommerceProposalSnapshot",
+  "getCommerceMonitoringSnapshot",
+]);
+
+const COMMERCE_OPS_COMPAT_EXPORTS = Object.freeze([
+  "summarizeCommerceCheckout",
+  "getPurchaseMonitoringSnapshot",
+  "getCommerceCheckoutSnapshot",
+  "getCommerceProposalSnapshot",
+  "getCommerceMonitoringSnapshot",
+]);
+
+function getCommerceDomain() {
+  const { listTargetSummaries, getPurchaseDiagnostics, listTrackedEvents, listRecommendations, listRuleTuningProposals } = require("../signals/store");
+  return createCommerceDomain({
+    listTargetSummaries,
+    getPurchaseDiagnostics,
+    listTrackedEvents,
+    listRecommendations,
+    listRuleTuningProposals,
+  });
 }
+
+const commerceOps = Object.freeze({
+  summarizeCommerceCheckout(...args) {
+    return getCommerceDomain().summarizeCommerceCheckout(...args);
+  },
+  getPurchaseMonitoringSnapshot(...args) {
+    return getCommerceDomain().getPurchaseMonitoringSnapshot(...args);
+  },
+  getCommerceCheckoutSnapshot(...args) {
+    return getCommerceDomain().getCommerceCheckoutSnapshot(...args);
+  },
+  getCommerceProposalSnapshot(...args) {
+    return getCommerceDomain().getCommerceProposalSnapshot(...args);
+  },
+  getCommerceMonitoringSnapshot(...args) {
+    return getCommerceDomain().getCommerceMonitoringSnapshot(...args);
+  },
+});
+
+const commerceOpsContract = Object.freeze({
+  entry: "commerceOps",
+  methods: COMMERCE_OPS_CONTRACT_METHODS,
+  compatExports: COMMERCE_OPS_COMPAT_EXPORTS,
+});
+
+const RESULT_GOVERNANCE_OPS_CONTRACT_METHODS = Object.freeze([
+  "summarizePaymentResults",
+  "summarizeFulfillmentResults",
+  "summarizeRefundResults",
+  "buildPaymentRecommendationCandidates",
+  "buildFulfillmentRecommendationCandidates",
+  "buildResultGovernanceAlerts",
+  "buildPaymentProposalCandidates",
+  "buildFulfillmentProposalCandidates",
+  "buildPaymentObservationFollowupCandidates",
+  "buildFulfillmentObservationFollowupCandidates",
+  "getResultGovernanceProposalSnapshot",
+  "getResultGovernanceWorkflowSnapshot",
+  "getResultGovernanceMonitoringSnapshot",
+]);
+
+const RESULT_GOVERNANCE_OPS_COMPAT_EXPORTS = Object.freeze([
+  "summarizePaymentResults",
+  "summarizeFulfillmentResults",
+  "summarizeRefundResults",
+  "buildPaymentRecommendationCandidates",
+  "buildFulfillmentRecommendationCandidates",
+  "buildResultGovernanceAlerts",
+  "buildPaymentProposalCandidates",
+  "buildFulfillmentProposalCandidates",
+  "buildPaymentObservationFollowupCandidates",
+  "buildFulfillmentObservationFollowupCandidates",
+  "getResultGovernanceProposalSnapshot",
+  "getResultGovernanceWorkflowSnapshot",
+  "getResultGovernanceMonitoringSnapshot",
+]);
+
+function getResultGovernanceDomain() {
+  const { createResultGovernanceDomain } = require("./result-governance-domain");
+  const { listRecommendations, listRuleTuningProposals } = require("../signals/store");
+  return createResultGovernanceDomain({
+    listRecommendations,
+    listRuleTuningProposals,
+  });
+}
+
+const resultGovernanceOps = Object.freeze({
+  summarizePaymentResults(...args) {
+    return getResultGovernanceDomain().summarizePaymentResults(...args);
+  },
+  summarizeFulfillmentResults(...args) {
+    return getResultGovernanceDomain().summarizeFulfillmentResults(...args);
+  },
+  summarizeRefundResults(...args) {
+    return getResultGovernanceDomain().summarizeRefundResults(...args);
+  },
+  buildPaymentRecommendationCandidates(...args) {
+    return getResultGovernanceDomain().buildPaymentRecommendationCandidates(...args);
+  },
+  buildFulfillmentRecommendationCandidates(...args) {
+    return getResultGovernanceDomain().buildFulfillmentRecommendationCandidates(...args);
+  },
+  buildResultGovernanceAlerts(...args) {
+    return getResultGovernanceDomain().buildResultGovernanceAlerts(...args);
+  },
+  buildPaymentProposalCandidates(...args) {
+    return getResultGovernanceDomain().buildPaymentProposalCandidates(...args);
+  },
+  buildFulfillmentProposalCandidates(...args) {
+    return getResultGovernanceDomain().buildFulfillmentProposalCandidates(...args);
+  },
+  buildPaymentObservationFollowupCandidates(...args) {
+    return getResultGovernanceDomain().buildPaymentObservationFollowupCandidates(...args);
+  },
+  buildFulfillmentObservationFollowupCandidates(...args) {
+    return getResultGovernanceDomain().buildFulfillmentObservationFollowupCandidates(...args);
+  },
+  getResultGovernanceProposalSnapshot(...args) {
+    return getResultGovernanceDomain().getResultGovernanceProposalSnapshot(...args);
+  },
+  getResultGovernanceWorkflowSnapshot(...args) {
+    return getResultGovernanceDomain().getResultGovernanceWorkflowSnapshot(...args);
+  },
+  getResultGovernanceMonitoringSnapshot(...args) {
+    return getResultGovernanceDomain().getResultGovernanceMonitoringSnapshot(...args);
+  },
+});
+
+const resultGovernanceOpsContract = Object.freeze({
+  entry: "resultGovernanceOps",
+  methods: RESULT_GOVERNANCE_OPS_CONTRACT_METHODS,
+  compatExports: RESULT_GOVERNANCE_OPS_COMPAT_EXPORTS,
+});
+
+const {
+  ingestSeoMetrics,
+  importSeoMetricsFromSearchConsole,
+  replayLatestSeoImport,
+  listSeoMetrics,
+  getSeoMetricsWindowSummary,
+  getSeoMetricsFreshnessSummary,
+  getSeoImportDiagnostics,
+  getSeoGeoRecommendationSummary,
+  getSeoMonitoringSnapshot,
+} = seoOps;
+
+const {
+  summarizeCommerceCheckout,
+  getPurchaseMonitoringSnapshot,
+  getCommerceCheckoutSnapshot,
+  getCommerceProposalSnapshot,
+  getCommerceMonitoringSnapshot,
+} = commerceOps;
+
+const {
+  summarizePaymentResults,
+  summarizeFulfillmentResults,
+  summarizeRefundResults,
+  buildPaymentRecommendationCandidates,
+  buildFulfillmentRecommendationCandidates,
+  buildResultGovernanceAlerts,
+  buildPaymentProposalCandidates,
+  buildFulfillmentProposalCandidates,
+  buildPaymentObservationFollowupCandidates,
+  buildFulfillmentObservationFollowupCandidates,
+  getResultGovernanceProposalSnapshot,
+  getResultGovernanceWorkflowSnapshot,
+  getResultGovernanceMonitoringSnapshot,
+} = resultGovernanceOps;
 
 module.exports = {
   createEvent,
   listEvents,
+  listPlaybooks,
+  getPlaybook,
+  findPlaybookByKey,
+  upsertPlaybook,
+  applyPlaybook,
+  transitionPlaybookApplication,
   upsertAlertsFromMonitoring,
   upsertCustomerNotificationsFromMonitoring,
   listAlerts,
@@ -1298,10 +1787,48 @@ module.exports = {
   createRepoChange,
   getRepoChange,
   listRepoChanges,
+  findSeoTargetRegistryRepoChange,
+  getSeoSyncStatus,
+  recordSeoSyncRun,
+  setSeoSyncPaused,
+  clearSeoSyncBackoff,
+  seoOps,
+  seoOpsContract,
+  commerceOps,
+  commerceOpsContract,
+  resultGovernanceOps,
+  resultGovernanceOpsContract,
   updateRepoChange,
   transitionRepoChange,
+  // 兼容层：新代码应优先通过 `seoOps` facade 调用 SEO 相关能力。
   ingestSeoMetrics,
+  importSeoMetricsFromSearchConsole,
+  replayLatestSeoImport,
   listSeoMetrics,
   getSeoMetricsWindowSummary,
+  getSeoMetricsFreshnessSummary,
+  getSeoImportDiagnostics,
+  getSeoGeoRecommendationSummary,
+  getSeoMonitoringSnapshot,
+  // 兼容层：新代码应优先通过 `commerceOps` facade 调用 commerce 相关能力。
+  summarizeCommerceCheckout,
+  getPurchaseMonitoringSnapshot,
+  getCommerceCheckoutSnapshot,
+  getCommerceProposalSnapshot,
+  getCommerceMonitoringSnapshot,
+  // 兼容层：新代码应优先通过 `resultGovernanceOps` facade 调用 result governance 相关能力。
+  summarizePaymentResults,
+  summarizeFulfillmentResults,
+  summarizeRefundResults,
+  buildPaymentRecommendationCandidates,
+  buildFulfillmentRecommendationCandidates,
+  buildResultGovernanceAlerts,
+  buildPaymentProposalCandidates,
+  buildFulfillmentProposalCandidates,
+  buildPaymentObservationFollowupCandidates,
+  buildFulfillmentObservationFollowupCandidates,
+  getResultGovernanceProposalSnapshot,
+  getResultGovernanceWorkflowSnapshot,
+  getResultGovernanceMonitoringSnapshot,
   now,
 };
