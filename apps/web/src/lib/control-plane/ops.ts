@@ -321,6 +321,81 @@ export async function listOpsTargets(params?: { type?: string; q?: string }) {
   return res.data ?? { items: [], total: 0 };
 }
 
+export async function listOpsPlaybooks(params?: { limit?: number }) {
+  const url = new URL(`${getBaseUrl()}/ops/playbooks`);
+  if (params?.limit) url.searchParams.set("limit", String(params.limit));
+  const res = await fetchJson<OpsEnvelope<{ items: any[]; total: number }>>(url, {
+    headers: getAdminHeaders(),
+  });
+  return res.data ?? { items: [], total: 0 };
+}
+
+export async function getOpsPlaybook(id: string) {
+  const url = `${getBaseUrl()}/ops/playbooks/${encodeURIComponent(id)}`;
+  const res = await fetchJson<
+    OpsEnvelope<{
+      playbook: {
+        id: string;
+        key: string;
+        status: string;
+        title: string;
+        source?: string;
+        targetType?: string;
+        updatedAt?: string;
+        createdAt?: string;
+        observationWindow?: string;
+        observationMetrics?: string[];
+        steps?: Array<{ code: string; label: string; detail: string }>;
+        examples?: Array<{ targetLabel?: string; headline?: string; count?: number }>;
+        applications?: Array<{
+          id: string;
+          status: string;
+          createdAt: string;
+          source?: string;
+          targetType?: string;
+          targetId?: string | null;
+          targetLabel?: string;
+          observationMetrics?: string[];
+          nextAction?: {
+            code: string;
+            actionPath: string;
+            actionLabel: string;
+            description: string;
+          } | null;
+        }>;
+      };
+    }>
+  >(url, { headers: getAdminHeaders() });
+  return res.data!.playbook;
+}
+
+export async function applyOpsPlaybook(
+  id: string,
+  input: { source?: string; targetType?: string; targetId?: string | null; targetLabel?: string; note?: string },
+) {
+  const url = `${getBaseUrl()}/ops/playbooks/${encodeURIComponent(id)}/apply`;
+  const res = await fetchJson<OpsEnvelope<{ playbook: any; application: any }>>(url, {
+    method: "POST",
+    headers: getAdminHeaders(),
+    body: JSON.stringify(input),
+  });
+  return res.data!;
+}
+
+export async function transitionOpsPlaybookApplication(
+  playbookId: string,
+  applicationId: string,
+  input: { status: "in_review" | "executed" | "observing" | "succeeded" | "regressed" | "cancelled"; note?: string },
+) {
+  const url = `${getBaseUrl()}/ops/playbooks/${encodeURIComponent(playbookId)}/applications/${encodeURIComponent(applicationId)}/transition`;
+  const res = await fetchJson<OpsEnvelope<{ playbook: any; application: any }>>(url, {
+    method: "POST",
+    headers: getAdminHeaders(),
+    body: JSON.stringify(input),
+  });
+  return res.data!;
+}
+
 export async function getOpsAuthStatus() {
   const url = `${getBaseUrl()}/ops/auth/status`;
   const res = await fetchJson<
@@ -380,6 +455,23 @@ export async function getOpsEvents(params?: {
   return res.data ?? { items: [], total: 0 };
 }
 
+export async function createOpsTrialFeedback(input: {
+  category: string;
+  mostBlockedStep: string;
+  easiestToMisclick: string;
+  mostUnclearNextStep: string;
+  note?: string;
+  page?: string;
+}) {
+  const url = `${getBaseUrl()}/ops/events/feedback`;
+  const res = await fetchJson<OpsEnvelope<{ event: OpsEventRecord }>>(url, {
+    method: "POST",
+    headers: getAdminHeaders(),
+    body: JSON.stringify(input),
+  });
+  return res.data!;
+}
+
 export type MonitoringSummary = {
   generatedAt: string;
   runtime: {
@@ -388,6 +480,67 @@ export type MonitoringSummary = {
     cmsAdapter: string;
     consecutiveBatchFailures: number;
     lastBatchRunAt: string | null;
+    seoSync: {
+      enabled: boolean;
+      configured: boolean;
+      intervalMinutes: number;
+      failureBaseDelayMinutes: number;
+      failureMaxDelayMinutes: number;
+      runOnStart: boolean;
+      siteUrl: string | null;
+      missing: string[];
+      health: "healthy" | "warning" | "degraded" | "paused" | "not_configured" | "disabled";
+      healthLabel: string;
+      healthDetail: string;
+      recoveryHint: string | null;
+      source: string;
+      lastRunStatus: "success" | "failure" | "skipped" | null;
+      lastRunAt: string | null;
+      lastSuccessAt: string | null;
+      lastFailureAt: string | null;
+      lastSkippedAt: string | null;
+      consecutiveFailures: number;
+      lastError: string | null;
+      lastErrorCategory: string | null;
+      lastErrorCode: string | null;
+      lastErrorRetryable: boolean | null;
+      lastFetchedRows: number;
+      lastIngestedRows: number;
+      lastRequest: {
+        siteUrl: string | null;
+        startDate: string | null;
+        endDate: string | null;
+        rowLimit: number | null;
+        searchType: string | null;
+        dataState: string | null;
+        aggregationType: string | null;
+        dimensions: string[];
+      } | null;
+      lastActor: string | null;
+      nextAllowedRunAt: string | null;
+      backoffMinutes: number;
+      paused: boolean;
+      pausedAt: string | null;
+      pausedBy: string | null;
+      recentRuns: Array<{
+        status: "success" | "failure" | "skipped";
+        at: string;
+        actor: string | null;
+        fetchedRows: number;
+        ingestedRows: number;
+        error: string | null;
+        errorCategory: string | null;
+        errorCode: string | null;
+        errorRetryable: boolean | null;
+        recoveryHint: string | null;
+        reason: string | null;
+        request: {
+          siteUrl: string | null;
+          startDate: string | null;
+          endDate: string | null;
+        } | null;
+      }>;
+    };
     dependencies: {
       medusa: {
         status: "healthy" | "degraded" | "not_configured";
@@ -408,6 +561,653 @@ export type MonitoringSummary = {
       snapshots: number;
       recommendations: number;
     };
+  };
+  seoRuntimeJudgment?: {
+    health: "healthy" | "warning" | "degraded";
+    headline: string;
+    detail: string;
+    focusArea: "healthy" | "sync" | "freshness" | "import_gap" | "combined";
+    actionHint: string;
+  };
+  todaysBestBet?: {
+    health: "healthy" | "warning" | "degraded";
+    headline: string;
+    reason: string;
+    actionHint: string;
+    actionPath: string;
+    actionLabel: string;
+    expectedImpact: string;
+    source: "governance" | "growth_loop" | "geo" | "experiment";
+    targetType: string;
+    targetId: string | null;
+    targetLabel: string;
+    targetMeta: Record<string, string> | null;
+    automationEligibility: "manual_only" | "auto_draft" | "auto_proposal_candidate";
+    automationReason: string;
+    automationArtifact: {
+      kind: string;
+      id: string;
+      status: string;
+      label: string;
+      actionPath: string;
+      actionLabel: string;
+    } | null;
+    promotionEligibility: "manual_review_only" | "draft_missing" | "draft_only" | "review_after_draft" | "candidate_ready";
+    promotionReason: string;
+    promotionAction: {
+      code: string;
+      actionPath: string;
+      actionLabel: string;
+      description: string;
+      mutation: {
+        kind: "proposal_transition" | "repo_change_transition";
+        targetId: string;
+        nextStatus: "approved" | "merge_candidate" | "auto_merge_candidate";
+      } | null;
+    };
+    executionState: "pending" | "executed" | "observing" | "succeeded" | "returned_to_risk";
+    executionReason: string;
+    observationStatus: "not_started" | "handoff_ready" | "observing" | "complete" | "regressed";
+    observationWindow: string;
+    observationMetrics: string[];
+    observationNextStep: string;
+    playbookRef: {
+      id: string;
+      title: string;
+      actionPath: string;
+      latestApplication: {
+        id: string;
+        status: string;
+        createdAt: string;
+        nextAction: {
+          code: string;
+          actionPath: string;
+          actionLabel: string;
+          description: string;
+        } | null;
+      } | null;
+    } | null;
+  };
+  decisionTimeline?: {
+    trend: "risk_heavy" | "decision_heavy" | "execution_heavy" | "steady";
+    summary: string;
+    counts: {
+      decision: number;
+      execution: number;
+      risk: number;
+      signal: number;
+    };
+    currentStory: string;
+    items: Array<{
+      at: string;
+      kind: "decision" | "execution" | "risk" | "signal";
+      title: string;
+      detail: string;
+    }>;
+  };
+  dailySnapshotHistory?: {
+    items: Array<{
+      date: string;
+      recordedAt: string;
+      todaysBestBet: {
+        health: "healthy" | "warning" | "degraded";
+        headline: string;
+        reason: string;
+        actionHint: string;
+        actionPath: string;
+        actionLabel: string;
+        expectedImpact: string;
+        source: "governance" | "growth_loop" | "geo" | "experiment";
+        targetType: string;
+        targetId: string | null;
+        targetLabel: string;
+        targetMeta: Record<string, string> | null;
+        automationEligibility: "manual_only" | "auto_draft" | "auto_proposal_candidate";
+        automationReason: string;
+        automationArtifact: {
+          kind: string;
+          id: string;
+          status: string;
+          label: string;
+          actionPath: string;
+          actionLabel: string;
+        } | null;
+        promotionEligibility: "manual_review_only" | "draft_missing" | "draft_only" | "review_after_draft" | "candidate_ready";
+        promotionReason: string;
+        promotionAction: {
+          code: string;
+          actionPath: string;
+          actionLabel: string;
+          description: string;
+          mutation: {
+            kind: "proposal_transition" | "repo_change_transition";
+            targetId: string;
+            nextStatus: "approved" | "merge_candidate" | "auto_merge_candidate";
+          } | null;
+        };
+        executionState: "pending" | "executed" | "observing" | "succeeded" | "returned_to_risk";
+        executionReason: string;
+        observationStatus: "not_started" | "handoff_ready" | "observing" | "complete" | "regressed";
+        observationWindow: string;
+        observationMetrics: string[];
+        observationNextStep: string;
+      } | null;
+      governanceOverview: {
+        health: "healthy" | "warning" | "degraded";
+        primaryLine: "seo" | "result_governance" | "commerce";
+        headline: string | null;
+      } | null;
+      growthLoopOverview: {
+        health: "healthy" | "warning" | "degraded";
+        headline: string | null;
+      } | null;
+      geoOverview: {
+        health: "healthy" | "warning" | "degraded";
+        headline: string | null;
+      } | null;
+      growthExperimentOverview: {
+        health: "healthy" | "warning" | "degraded";
+        headline: string | null;
+      } | null;
+    }>;
+  };
+  weeklyOperatingReview?: {
+    health: "healthy" | "warning" | "degraded";
+    range: { from: string | null; to: string | null; days: number };
+    headline: string;
+    summary: string;
+    executionOutcomes: {
+      counts: {
+        executed: number;
+        observing: number;
+        succeeded: number;
+        returned_to_risk: number;
+      };
+      summary: string;
+      items: Array<{
+        date: string;
+        source: "governance" | "growth_loop" | "geo" | "experiment";
+        headline: string;
+        targetLabel: string;
+        executionState: "pending" | "executed" | "observing" | "succeeded" | "returned_to_risk";
+        observationStatus: "not_started" | "handoff_ready" | "observing" | "complete" | "regressed";
+      }>;
+    };
+    outcomeAttribution: {
+      bySource: Record<
+        "governance" | "growth_loop" | "geo" | "experiment",
+        { total: number; executed: number; observing: number; succeeded: number; returned_to_risk: number }
+      >;
+      winningPatterns: Array<{
+        source: "governance" | "growth_loop" | "geo" | "experiment";
+        targetLabel: string;
+        headline: string;
+        count: number;
+      }>;
+      regressionPatterns: Array<{
+        source: "governance" | "growth_loop" | "geo" | "experiment";
+        targetLabel: string;
+        headline: string;
+        count: number;
+      }>;
+      hints: string[];
+    };
+    playbookDrafts: Array<{
+      id: string;
+      key: string;
+      title: string;
+      source: "governance" | "growth_loop" | "geo" | "experiment";
+      targetType: string;
+      actionPath: string;
+      latestApplication: {
+        id: string;
+        status: string;
+        createdAt: string;
+        nextAction: {
+          code: string;
+          actionPath: string;
+          actionLabel: string;
+          description: string;
+        } | null;
+      } | null;
+    }>;
+    playbookApplicationOutcomes: {
+      counts: Record<"draft" | "in_review" | "executed" | "observing" | "succeeded" | "regressed" | "cancelled", number>;
+      summary: string;
+      items: Array<{
+        playbookId: string;
+        playbookTitle: string;
+        applicationId: string;
+        createdAt: string;
+        status: string;
+        targetType: string;
+        targetId: string | null;
+        targetLabel: string;
+        nextAction: { code: string; actionPath: string; actionLabel: string; description: string } | null;
+        actionPath: string;
+      }>;
+    };
+    focus: "governance" | "growth_loop" | "geo" | "experiment";
+    bestBetSources: Record<string, number>;
+    healthBuckets: Record<
+      "governance" | "growth_loop" | "geo" | "experiment",
+      { healthy: number; warning: number; degraded: number }
+    >;
+    riskDays: Array<{
+      date: string;
+      degraded: Array<"governance" | "growth_loop" | "geo" | "experiment">;
+      bestBetSource: string;
+    }>;
+    nextWeekBets: Array<{
+      priority: "p0" | "p1" | "p2";
+      title: string;
+      reason: string;
+      actionPath: string;
+      actionLabel: string;
+      expectedImpact: string;
+      metricSummary: string | null;
+      targetType: string;
+      targetId: string | null;
+      targetLabel: string;
+      targetMeta: Record<string, string> | null;
+      automationEligibility: "manual_only" | "auto_draft" | "auto_proposal_candidate";
+      automationReason: string;
+      automationArtifact: {
+        kind: string;
+        id: string;
+        status: string;
+        label: string;
+        actionPath: string;
+        actionLabel: string;
+      } | null;
+      promotionEligibility: "manual_review_only" | "draft_missing" | "draft_only" | "review_after_draft" | "candidate_ready";
+      promotionReason: string;
+      promotionAction: {
+        code: string;
+        actionPath: string;
+        actionLabel: string;
+        description: string;
+        mutation: {
+          kind: "proposal_transition" | "repo_change_transition";
+          targetId: string;
+          nextStatus: "approved" | "merge_candidate" | "auto_merge_candidate";
+        } | null;
+      };
+      executionState: "pending" | "executed" | "observing" | "succeeded" | "returned_to_risk";
+      executionReason: string;
+      observationStatus: "not_started" | "handoff_ready" | "observing" | "complete" | "regressed";
+      observationWindow: string;
+      observationMetrics: string[];
+      observationNextStep: string;
+      playbookRef: {
+        id: string;
+        title: string;
+        actionPath: string;
+        latestApplication: {
+          id: string;
+          status: string;
+          createdAt: string;
+          nextAction: {
+            code: string;
+            actionPath: string;
+            actionLabel: string;
+            description: string;
+          } | null;
+        } | null;
+      } | null;
+    }>;
+  };
+  governanceOverview?: {
+    health: "healthy" | "warning" | "degraded";
+    headline: string;
+    detail: string;
+    primaryLine: "seo" | "result_governance" | "commerce";
+    actionHint: string;
+    lines: Array<{
+      key: "seo" | "result_governance" | "commerce";
+      title: string;
+      health: "healthy" | "warning" | "degraded";
+      headline: string;
+      detail: string;
+      actionHint: string;
+      actionPath: string;
+      actionLabel: string;
+      supportingCount: number;
+    }>;
+  };
+  growthLoopOverview?: {
+    health: "healthy" | "warning" | "degraded";
+    headline: string;
+    detail: string;
+    actionHint: string;
+    metrics: {
+      seoTrackedTargets: number;
+      seoLowCtrCount: number;
+      seoPositionDropCount: number;
+      checkoutStarts: number;
+      checkoutCompletes: number;
+      purchases24h: number;
+      weakSources: number;
+      purchaseMisalignedTargets: number;
+    };
+    lines: Array<{
+      key: "traffic" | "conversion" | "result";
+      title: string;
+      status: "healthy" | "warning" | "degraded";
+      detail: string;
+    }>;
+  };
+  geoOverview?: {
+    health: "healthy" | "warning" | "degraded";
+    headline: string;
+    detail: string;
+    actionHint: string;
+    metrics: {
+      seoTrackedTargets: number;
+      seoLowCtrCount: number;
+      seoPositionDropCount: number;
+      entryViews: number;
+      entryCtr: number;
+      resultsViews: number;
+      resultCtr: number;
+      attributedProductViews: number;
+      attributedPurchases: number;
+      purchaseRateFromView: number;
+      geoRiskItems: number;
+    };
+    lines: Array<{
+      key: "discoverability" | "answer_quality" | "assisted_commerce";
+      title: string;
+      status: "healthy" | "warning" | "degraded";
+      detail: string;
+    }>;
+  };
+  growthExperimentOverview?: {
+    health: "healthy" | "warning" | "degraded";
+    headline: string;
+    detail: string;
+    actionHint: string;
+    totals: {
+      needsDecision: number;
+      observing: number;
+      followupRisk: number;
+      recovered: number;
+    };
+    groups: Array<{
+      key: string;
+      title: string;
+      status: "healthy" | "warning" | "degraded";
+      counts: {
+        needsDecision: number;
+        observing: number;
+        followupRisk: number;
+        recovered: number;
+      };
+    }>;
+    items: Array<{
+      groupKey: string;
+      groupTitle: string;
+      kind: "followup_risk" | "needs_decision" | "observing";
+      id: string | null;
+      headline: string;
+      status: string;
+      actionPath: string;
+      actionLabel: string;
+      targetType: string;
+      targetId: string | null;
+      targetLabel: string;
+      targetMeta: Record<string, string> | null;
+      effectState: "success" | "risk" | "observe" | "steady" | "failure" | null;
+      effectSummary: string | null;
+      effectMetrics: Array<{
+        key: string;
+        label: string;
+        value: string;
+      }>;
+    }>;
+  };
+  seoSyncHistory?: {
+    totalRunsTracked: number;
+    statusCounts: {
+      success: number;
+      failure: number;
+      skipped: number;
+    };
+    latestSuccessRun: MonitoringSummary["runtime"]["seoSync"]["recentRuns"][number] | null;
+    latestFailureRun: MonitoringSummary["runtime"]["seoSync"]["recentRuns"][number] | null;
+    latestSkippedRun: MonitoringSummary["runtime"]["seoSync"]["recentRuns"][number] | null;
+    firstFailureInCurrentStreak: MonitoringSummary["runtime"]["seoSync"]["recentRuns"][number] | null;
+    comparison: {
+      latestSuccessAt: string | null;
+      latestFailureAt: string | null;
+      latestSuccessRows: {
+        fetched: number;
+        ingested: number;
+      } | null;
+      latestFailure: {
+        category: string;
+        code: string;
+        retryable: boolean | null;
+      } | null;
+      changedSinceLastSuccess: boolean;
+    } | null;
+    recentRuns: MonitoringSummary["runtime"]["seoSync"]["recentRuns"];
+  };
+  seoSyncControlAudit?: {
+    totalActionsTracked: number;
+    actionCounts: {
+      retry_now: number;
+      pause: number;
+      resume: number;
+      clear_backoff: number;
+    };
+    latestAction: {
+      at: string | null;
+      actor: string | null;
+      action: "retry_now" | "pause" | "resume" | "clear_backoff" | null;
+      note: string | null;
+      assessment: {
+        status: "recovered" | "still_failing" | "pending_evidence" | "regressed" | "paused_intentionally";
+        label: string;
+        detail: string;
+      };
+      nextRun: {
+        at: string | null;
+        status: "success" | "failure" | "skipped" | null;
+        errorCategory: string | null;
+        errorCode: string | null;
+        retryable: boolean | null;
+        reason: string | null;
+        ingestedRows: number;
+      } | null;
+    } | null;
+    recentActions: Array<{
+      at: string | null;
+      actor: string | null;
+      action: "retry_now" | "pause" | "resume" | "clear_backoff" | null;
+      note: string | null;
+      assessment: {
+        status: "recovered" | "still_failing" | "pending_evidence" | "regressed" | "paused_intentionally";
+        label: string;
+        detail: string;
+      };
+      nextRun: {
+        at: string | null;
+        status: "success" | "failure" | "skipped" | null;
+        errorCategory: string | null;
+        errorCode: string | null;
+        retryable: boolean | null;
+        reason: string | null;
+        ingestedRows: number;
+      } | null;
+    }>;
+  };
+  seoSyncRecoveryReview?: {
+    status: "recovered" | "still_failing" | "pending_evidence" | "regressed" | "not_applicable";
+    label: string;
+    detail: string;
+    latestAction: {
+      at: string | null;
+      actor: string | null;
+      action: "retry_now" | "pause" | "resume" | "clear_backoff" | null;
+      nextRun: {
+        at: string | null;
+        status: "success" | "failure" | "skipped" | null;
+        errorCategory: string | null;
+        errorCode: string | null;
+        retryable: boolean | null;
+        reason: string | null;
+        ingestedRows: number;
+      } | null;
+    } | null;
+  };
+  resultGovernanceRuntimeJudgment?: {
+    health: "healthy" | "warning" | "degraded";
+    headline: string;
+    detail: string;
+    focusArea: "healthy" | "payment" | "fulfillment" | "refund" | "combined";
+    actionHint: string;
+  };
+  resultGovernanceLaneSummary?: {
+    lanes: Array<{
+      key: "payment" | "fulfillment" | "refund";
+      title: string;
+      health: "healthy" | "warning" | "degraded";
+      headline: string;
+      detail: string;
+      counts: {
+        recommendations: number;
+        proposals: number;
+        observationFollowups: number;
+      };
+      actionHint: string;
+      actionPath: string;
+      actionLabel: string;
+    }>;
+    totals: {
+      recommendations: number;
+      proposals: number;
+      observationFollowups: number;
+    };
+  };
+  commerceHealthSummary?: {
+    health: "healthy" | "warning" | "degraded";
+    label: string;
+    detail: string;
+    actionHint: string;
+    weakestSource: string | null;
+  };
+  commerceRuntimeJudgment?: {
+    health: "healthy" | "warning" | "degraded";
+    headline: string;
+    detail: string;
+    focusArea: string;
+    actionHint: string;
+  };
+  commerceSourceSummary?: {
+    sources: Array<{
+      key: string;
+      source: string;
+      health: "healthy" | "warning" | "degraded";
+      headline: string;
+      detail: string;
+      counts: {
+        recommendations: number;
+        proposals: number;
+        followupRisk: number;
+      };
+      actionHint: string;
+      actionPath: string;
+      actionLabel: string;
+    }>;
+    totals: {
+      recommendations: number;
+      proposals: number;
+      followupRisk: number;
+    };
+  };
+  seoFreshness?: {
+    status: "healthy" | "warning" | "critical" | "not_configured";
+    latestDate: string | null;
+    latestUpdatedAt: string | null;
+    latestSource: string | null;
+    daysSinceLatest: number | null;
+    totalRows: number;
+    targetsTracked: number;
+    targetsWithRecentData: number;
+    thresholds: {
+      warningDays: number;
+      criticalDays: number;
+    };
+  };
+  seoImportDiagnostics?: {
+    latestRun: {
+      id: string;
+      createdAt: string;
+      source: string;
+      actor: string;
+      parsedRows: number;
+      normalizedRows: number;
+      ingested: number;
+      skippedRows: number;
+      importDate: string | null;
+      unmappedPages: string[];
+      activeUnmappedPages: number;
+      resolvedUnmappedPages: number;
+      status: "healthy" | "partial" | "warning";
+    } | null;
+    recentRuns: Array<{
+      id: string;
+      createdAt: string;
+      source: string;
+      actor: string;
+      parsedRows: number;
+      normalizedRows: number;
+      ingested: number;
+      skippedRows: number;
+      importDate: string | null;
+      unmappedPages: string[];
+    }>;
+    recentUnmappedPages: Array<{
+      pagePath: string;
+      count: number;
+      lastSeenAt: string;
+      suggestion?: {
+        targetType: string;
+        targetId: string;
+        confidence: "high" | "medium";
+        reason: string;
+      } | null;
+      repoChange?: {
+        id: string;
+        status: string;
+        prUrl: string | null;
+        prNumber: number | null;
+        branchName: string | null;
+        updatedAt: string | null;
+      } | null;
+      resolutionStatus?: "unresolved" | "registered_pending_refresh";
+    }>;
+    resolvedRecentUnmappedPages: Array<{
+      pagePath: string;
+      count: number;
+      lastSeenAt: string;
+      suggestion?: {
+        targetType: string;
+        targetId: string;
+        confidence: "high" | "medium";
+        reason: string;
+      } | null;
+      repoChange?: {
+        id: string;
+        status: string;
+        prUrl: string | null;
+        prNumber: number | null;
+        branchName: string | null;
+        updatedAt: string | null;
+      } | null;
+      resolutionStatus?: "unresolved" | "registered_pending_refresh";
+    }>;
   };
   seoPerformance?: {
     windowDays: number;
@@ -1337,6 +2137,86 @@ export async function ingestSeoMetrics(params: { rows: Array<any>; source?: stri
   return res.data!;
 }
 
+export async function importSeoMetricsFromSearchConsole(params: {
+  rows?: Array<any>;
+  csvText?: string;
+  importDate?: string;
+  source?: string;
+}) {
+  const url = new URL(`${getBaseUrl()}/ops/seo-metrics/import`);
+  const res = await fetchJson<
+    OpsEnvelope<{
+      ingested: number;
+      parsedRows: number;
+      normalizedRows: number;
+      skippedRows: number;
+      unmappedPages: string[];
+      importDate: string | null;
+    }>
+  >(url, {
+    method: "POST",
+    headers: getAdminHeaders(),
+    body: JSON.stringify({
+      rows: params.rows ?? [],
+      csvText: params.csvText ?? "",
+      importDate: params.importDate ?? null,
+      source: params.source ?? "search_console",
+    }),
+  });
+  return res.data!;
+}
+
+export async function registerSeoTarget(params: {
+  targetType: "product" | "collection" | "guide";
+  targetId: string;
+  targetPath: string;
+  title?: string;
+}) {
+  const url = new URL(`${getBaseUrl()}/ops/seo-targets/register`);
+  const res = await fetchJson<
+    OpsEnvelope<{
+      repoChange: any;
+      result: { status: string; message?: string } | null;
+    }>
+  >(url, {
+    method: "POST",
+    headers: getAdminHeaders(),
+    body: JSON.stringify(params),
+  });
+  return res.data!;
+}
+
+export async function replayLatestSeoImport() {
+  const url = new URL(`${getBaseUrl()}/ops/seo-metrics/replay-latest`);
+  const res = await fetchJson<
+    OpsEnvelope<{
+      status: string;
+      replayedAt?: string;
+      ingested?: number;
+      parsedRows?: number;
+      normalizedRows?: number;
+      skippedRows?: number;
+      unmappedPages?: string[];
+      message?: string;
+    }>
+  >(url, {
+    method: "POST",
+    headers: getAdminHeaders(),
+    body: JSON.stringify({}),
+  });
+  return res.data!;
+}
+
+export async function controlSeoSearchConsoleSync(action: "retry_now" | "clear_backoff" | "pause" | "resume") {
+  const url = new URL(`${getBaseUrl()}/ops/seo-metrics/sync-search-console/control`);
+  const res = await fetchJson<OpsEnvelope<{ action: string; result?: any; seoSyncStatus: MonitoringSummary["runtime"]["seoSync"] }>>(url, {
+    method: "POST",
+    headers: getAdminHeaders(),
+    body: JSON.stringify({ action }),
+  });
+  return res.data!;
+}
+
 export async function assignSupportCase(id: string, params?: { owner?: string; note?: string }) {
   const url = new URL(`${getBaseUrl()}/ops/support-cases/${id}/assign`);
   const res = await fetchJson<OpsEnvelope<{ supportCase: SupportCase }>>(url, {
@@ -1453,6 +2333,23 @@ export async function openRepoChangeRevertPullRequest(id: string) {
     body: JSON.stringify({}),
   });
   return res.data!;
+}
+
+export async function transitionRepoChange(
+  id: string,
+  input: {
+    status: "merge_candidate" | "auto_merge_candidate";
+    note?: string;
+    patch?: Record<string, any>;
+  },
+) {
+  const url = `${getBaseUrl()}/ops/repo-changes/${id}/transition`;
+  const res = await fetchJson<OpsEnvelope<{ repoChange: RepoChangeRecord }>>(url, {
+    method: "POST",
+    headers: getAdminHeaders(),
+    body: JSON.stringify(input),
+  });
+  return res.data!.repoChange;
 }
 
 export async function generateOpsDraft(type: string, id: string) {
