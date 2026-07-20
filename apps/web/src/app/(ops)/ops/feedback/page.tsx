@@ -12,6 +12,17 @@ function getString(sp: Record<string, string | string[] | undefined>, key: strin
   return typeof sp[key] === "string" ? (sp[key] as string) : undefined;
 }
 
+function isNextRedirectError(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "digest" in error &&
+    typeof (error as { digest?: unknown }).digest === "string" &&
+    ((error as { digest: string }).digest === "NEXT_REDIRECT" ||
+      (error as { digest: string }).digest.startsWith("NEXT_REDIRECT;"))
+  );
+}
+
 export default async function OpsFeedbackPage({ searchParams }: Props) {
   const sp = (await searchParams) ?? {};
   const msg = getString(sp, "msg");
@@ -43,6 +54,9 @@ export default async function OpsFeedbackPage({ searchParams }: Props) {
       });
       redirect("/ops/feedback?msg=Feedback%20saved");
     } catch (error) {
+      if (isNextRedirectError(error)) {
+        throw error;
+      }
       const message = error instanceof Error ? error.message : "Feedback submit failed";
       redirect(`/ops/feedback?err=${encodeURIComponent(message)}`);
     }
@@ -155,4 +169,3 @@ export default async function OpsFeedbackPage({ searchParams }: Props) {
     </div>
   );
 }
-
