@@ -2,13 +2,14 @@
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
     "builder": "nixpacks",
-    "buildCommand": "npm --prefix ./apps/control-plane install --no-audit --no-fund",
+    "buildCommand": "npm install --no-audit --no-fund",
     "watchPatterns": [
-      "/apps/control-plane/**"
+      "/apps/control-plane/**",
+      "/railway.json"
     ]
   },
   "deploy": {
-    "startCommand": "npm --prefix ./apps/control-plane start",
+    "startCommand": "npm start",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 120,
     "restartPolicyType": "on_failure",
