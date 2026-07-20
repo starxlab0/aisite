@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node ./node_modules/next/dist/bin/next dev",
     "build:installed": "node ./node_modules/next/dist/bin/next build",
-    "build": "npm ci --no-audit --no-fund && npm run build:installed",
+    "build": "npm ci --include=dev --no-audit --no-fund && npm run build:installed",
     "start": "node ./node_modules/next/dist/bin/next start",
     "lint": "node ./node_modules/eslint/bin/eslint.js"
   },
