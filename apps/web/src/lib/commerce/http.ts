@@ -1,7 +1,15 @@
+export function getCommerceMode(): "medusa" | "mock" {
+  const raw = String(process.env.NEXT_PUBLIC_COMMERCE_MODE || "").trim().toLowerCase();
+  if (raw === "mock") return "mock";
+  return "medusa";
+}
+
 export function getMedusaBaseUrl() {
+  if (getCommerceMode() === "mock") return null;
   const url = process.env.NEXT_PUBLIC_MEDUSA_URL;
   if (!url) {
-    // 开发期允许为空；调用处需要自行处理为空的场景（返回 mock 或 null）
+    // 默认认为本地 dev 会跑 Medusa；若确实需要 mock，请设置 NEXT_PUBLIC_COMMERCE_MODE=mock
+    if (process.env.NODE_ENV !== "production") return "http://localhost:9000";
     return null;
   }
   return url.replace(/\/$/, "");

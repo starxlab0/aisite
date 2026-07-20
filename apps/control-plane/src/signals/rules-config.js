@@ -50,6 +50,21 @@ function defaultRules() {
         maxRate: 0.005,
       },
     },
+    "low-purchase-rate": {
+      description: "Low purchase rate suggests pricing, trust, offer, or conversion copy improvements",
+      kind: "low-rate",
+      rate: "purchase",
+      severity: "warning",
+      targetTypes: ["product", "collection"],
+      workflows: {
+        product: "product-rewrite",
+        collection: "collection-rewrite",
+      },
+      params: {
+        minViews: 150,
+        maxRate: 0.003,
+      },
+    },
     "weak-post-click-conversion": {
       description: "Low add-to-cart conversion after CTA clicks suggests post-click friction or merchandising mismatch",
       kind: "post-click-dropoff",
@@ -111,6 +126,15 @@ function normalizeParams(ruleId, params) {
       ...params,
       minViews: minViewsEnv ? Number(minViewsEnv) : params.minViews,
       maxRate: maxAtcEnv ? Number(maxAtcEnv) : params.maxRate ?? params.maxAddToCartRate,
+    };
+  }
+  if (ruleId === "low-purchase-rate") {
+    const minViewsEnv = process.env.SIGNALS_RULE_LOW_PURCHASE_MIN_VIEWS;
+    const maxPurchaseEnv = process.env.SIGNALS_RULE_LOW_PURCHASE_MAX_RATE || process.env.SIGNALS_RULE_LOW_PURCHASE_MAX_PURCHASE_RATE;
+    return {
+      ...params,
+      minViews: minViewsEnv ? Number(minViewsEnv) : params.minViews,
+      maxRate: maxPurchaseEnv ? Number(maxPurchaseEnv) : params.maxRate ?? params.maxPurchaseRate,
     };
   }
   if (ruleId === "weak-post-click-conversion") {
@@ -189,7 +213,7 @@ function normalizeRuleDefinition(ruleId, input, base) {
     }
     params = { ...params, minViews: safeMinViews, maxRate };
 
-    if (!(rate === "cta" || rate === "atc")) {
+    if (!(rate === "cta" || rate === "atc" || rate === "purchase")) {
       rate = base?.rate ?? "cta";
       warnings.push("invalid/missing rate; fallback applied");
     }

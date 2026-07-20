@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WEB_DIR="$ROOT_DIR/apps/web"
 MEDUSA_DIR="$ROOT_DIR/apps/medusa"
 
+echo "==> 运行 preflight"
+bash "$ROOT_DIR/scripts/preflight.sh"
+
 cleanup() {
   jobs -p | xargs -r kill >/dev/null 2>&1 || true
 }
@@ -28,4 +31,3 @@ echo ""
 echo "按 Ctrl+C 可停止全部服务。"
 
 wait "$MEDUSA_PID" "$WEB_PID"
-

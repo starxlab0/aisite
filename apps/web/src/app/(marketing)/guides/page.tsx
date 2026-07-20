@@ -43,6 +43,18 @@ export default async function GuidesPage() {
         内容中心：优先展示已发布的 <code className="rounded bg-zinc-100 px-1">guideArticle</code>，支持从
         control-plane draft 或 Sanity 渲染。
       </p>
+      <div className="mt-6 rounded-xl border border-zinc-200 bg-white p-5">
+        <p className="text-sm font-medium text-zinc-900">Start from content, then narrow to products</p>
+        <p className="mt-2 text-sm text-zinc-600">如果你还没有明确型号，先看 guide；如果想更快缩小范围，直接走问答或进入商品列表。</p>
+        <div className="mt-4 flex flex-wrap gap-4 text-sm">
+          <Link className="underline underline-offset-4" href="/quiz?src=guides">
+            Find your match
+          </Link>
+          <Link className="underline underline-offset-4" href="/shop">
+            Shop all
+          </Link>
+        </div>
+      </div>
       <div className="mt-8 rounded-xl border border-zinc-200 bg-white p-5">
         <p className="text-sm font-medium text-zinc-900">文章列表</p>
         <p className="mt-1 text-xs text-zinc-500">source: {guides.source}</p>

@@ -7,7 +7,9 @@
   },
   "scripts": {
     "dev": "node ./src/server.js",
+    "start": "node ./src/server.js",
     "signals:batch": "node ./src/signals/run-batch.js",
+    "seo:sync:search-console": "node ./src/ops/run-seo-search-console-sync.js",
     "test": "node --test ./test/*.test.js"
   }
 }

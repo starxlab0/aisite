@@ -1,6 +1,7 @@
-import { createRuleTuningProposal, getOpsAuthStatus, getOpsEvents, getRecommendationRuleStats, getRecommendations, getSignalsOverview, getSignalsStatus, listOpsTargets, listRuleTuningProposals, resolveRecommendation, transitionRuleTuningProposal } from "@/lib/control-plane/ops";
+import { createRuleTuningProposal, getAutoActionPolicy, getMonitoringSummary, getOpsAuthStatus, getOpsEvents, getRecommendationRuleStats, getRecommendations, getSignalsOverview, getSignalsStatus, listOpsTargets, listRepoChanges, listRuleTuningProposals, openRepoChangePullRequest, openRepoChangeRevertPullRequest, resolveRecommendation, syncActiveRepoChanges, syncRepoChange, transitionRuleTuningProposal, updateAutoActionPolicy } from "@/lib/control-plane/ops";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { GovernanceBadge, governanceToneClass } from "./components/governance-ui";
 
 type Props = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -11,18 +12,23 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
   const type = typeof sp.type === "string" ? sp.type : undefined;
   const q = typeof sp.q === "string" ? sp.q : undefined;
   const status = typeof sp.status === "string" ? sp.status : undefined;
+  const repoNext = typeof sp.repoNext === "string" ? sp.repoNext : undefined;
   const err = typeof sp.err === "string" ? sp.err : undefined;
   const msg = typeof sp.msg === "string" ? sp.msg : undefined;
 
   const { items } = await listOpsTargets({ type, q });
   const authStatus = await getOpsAuthStatus();
+  const canPublish = Array.isArray(authStatus.capabilities) && authStatus.capabilities.includes("publish_content");
   const recommendations = await getRecommendations({
     status: status ?? "open,in_progress",
     targetType: type === "faq" ? undefined : type,
   });
   const ruleStats = await getRecommendationRuleStats({ sinceDays: 30 });
   const recentProposals = await listRuleTuningProposals({ limit: 6 });
+  const repoChanges = await listRepoChanges({ limit: 20, targetType: type === "faq" ? undefined : type });
+  const autoActionPolicy = await getAutoActionPolicy();
   const signalsStatus = await getSignalsStatus();
+  const monitoringSummary = await getMonitoringSummary({ targetType: type === "faq" ? undefined : type });
   const audit = await getOpsEvents();
   const overviewResult = await getSignalsOverview(type === "faq" ? undefined : { targetType: type });
   const overview =
@@ -97,6 +103,89 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
     }
   }
 
+  async function onSyncRepoChange(formData: FormData) {
+    "use server";
+    const id = String(formData.get("id") ?? "");
+    if (!id) return;
+    try {
+      const result = await syncRepoChange(id);
+      redirect(`/ops?msg=${encodeURIComponent(result.sync.message)}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Repo sync failed";
+      redirect(`/ops?err=${encodeURIComponent(message)}`);
+    }
+  }
+
+  async function onSyncActiveRepoChanges() {
+    "use server";
+    try {
+      const result = await syncActiveRepoChanges({
+        limit: 5,
+        targetType: type === "faq" ? undefined : type,
+      });
+      redirect(`/ops${type ? `?type=${type}&` : "?"}msg=${encodeURIComponent(`synced ${result.total} active repo changes`)}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Repo bulk sync failed";
+      redirect(`/ops${type ? `?type=${type}&` : "?"}err=${encodeURIComponent(message)}`);
+    }
+  }
+
+  async function onOpenRepoChangePullRequest(formData: FormData) {
+    "use server";
+    const id = String(formData.get("id") ?? "");
+    if (!id) return;
+    try {
+      const result = await openRepoChangePullRequest(id);
+      redirect(`/ops?msg=${encodeURIComponent(result.result.message)}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Open PR failed";
+      redirect(`/ops?err=${encodeURIComponent(message)}`);
+    }
+  }
+
+  async function onOpenRepoChangeRevertPullRequest(formData: FormData) {
+    "use server";
+    const id = String(formData.get("id") ?? "");
+    if (!id) return;
+    try {
+      const result = await openRepoChangeRevertPullRequest(id);
+      redirect(`/ops?msg=${encodeURIComponent(result.result.message)}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Open revert PR failed";
+      redirect(`/ops?err=${encodeURIComponent(message)}`);
+    }
+  }
+
+  async function onUpdateAutoActionPolicy(formData: FormData) {
+    "use server";
+    const parseList = (value: FormDataEntryValue | null) =>
+      String(value ?? "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    try {
+      await updateAutoActionPolicy({
+        autoMerge: {
+          enabled: String(formData.get("autoMergeEnabled") ?? "") === "true",
+          allowedTargetTypes: parseList(formData.get("autoMergeTargetTypes")),
+          allowedTriggers: parseList(formData.get("autoMergeTriggers")),
+          allowedTargetIds: parseList(formData.get("autoMergeTargetIds")),
+        },
+        autoRevert: {
+          enabled: String(formData.get("autoRevertEnabled") ?? "") === "true",
+          allowedTargetTypes: parseList(formData.get("autoRevertTargetTypes")),
+          allowedTriggers: parseList(formData.get("autoRevertTriggers")),
+          allowedTargetIds: parseList(formData.get("autoRevertTargetIds")),
+          minRiskCount: Math.max(1, Number(formData.get("autoRevertMinRiskCount") ?? 2) || 2),
+        },
+      });
+      redirect(`/ops?msg=${encodeURIComponent("auto-action policy updated")}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Update auto-action policy failed";
+      redirect(`/ops?err=${encodeURIComponent(message)}`);
+    }
+  }
+
   function actorLabel(actor: string) {
     if (!actor) return "anonymous";
     const [role, rest] = actor.split(":token:");
@@ -114,6 +203,10 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
       review: "Review draft",
       publish: "Publish",
       rollback: "Rollback",
+      auto_merge_gate_allow: "Auto-merge gate allow",
+      auto_merge_gate_hold: "Auto-merge gate hold",
+      auto_revert_gate_allow: "Auto-revert gate allow",
+      auto_revert_gate_hold: "Auto-revert gate hold",
       preview_token: "Create preview",
       revoke_preview: "Revoke preview",
     };
@@ -183,6 +276,8 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
       ordering: "排序",
       duplication: "去重",
       content_quality: "内容质量",
+      pricing_offer: "价格与优惠",
+      trust_signals: "信任信号",
     };
     return map[key] ?? key;
   }
@@ -200,6 +295,71 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
       insufficient: "border-zinc-200 bg-white text-zinc-500",
     };
     return <span className={`rounded border px-2 py-0.5 text-xs ${map[quality] ?? map.insufficient}`}>{quality}</span>;
+  }
+
+  function monitorAlertTone(level: string) {
+    if (level === "critical") return "border-rose-200 bg-rose-50 text-rose-800";
+    if (level === "warning") return "border-amber-200 bg-amber-50 text-amber-800";
+    return "border-zinc-200 bg-zinc-50 text-zinc-700";
+  }
+
+  function dependencyTone(status: string) {
+    if (status === "healthy") return "border-emerald-200 bg-emerald-50 text-emerald-800";
+    if (status === "degraded") return "border-rose-200 bg-rose-50 text-rose-800";
+    return "border-amber-200 bg-amber-50 text-amber-800";
+  }
+
+  function actionTone(tone: string) {
+    return governanceToneClass(tone);
+  }
+
+  function governanceTargetHref(targetType: string, targetId: string) {
+    if (targetType === "faq" && targetId.includes(":")) {
+      const [faqType, faqId] = targetId.split(":");
+      return `/ops/faq/${faqType}/${faqId}`;
+    }
+    return `/ops/${targetType}/${targetId}`;
+  }
+
+  function governanceRepoNextHref(targetType: string, targetId: string, code: string | null | undefined) {
+    const params = new URLSearchParams();
+    if (targetType) params.set("type", targetType);
+    if (targetId) params.set("q", targetId);
+    if (code === "ready_for_review") params.set("repoNext", "wait_ci");
+    if (code === "ready_auto_merge") params.set("repoNext", "ready_auto_merge");
+    if (code === "auto_revert_ready") params.set("repoNext", "ready_revert");
+    if (code === "blocked_auto_merge_policy" || code === "blocked_revert_policy") params.set("repoNext", "blocked_policy");
+    const query = params.toString();
+    return `/ops${query ? `?${query}` : ""}#repo-publish-queue`;
+  }
+
+  function governanceStateTone(tone: string) {
+    return governanceToneClass(tone);
+  }
+
+  function repoGovernanceState(change: any) {
+    const code = String(change?.recommendedNextStep?.code || "");
+    if (code === "ready_for_review") return { label: "需要立即审核", tone: "ready" };
+    if (["auto_revert_ready", "investigate_ci"].includes(code) || change?.status === "ci_failed") {
+      return { label: "需要立即处理", tone: "critical" };
+    }
+    if (["blocked_auto_merge_policy", "blocked_revert_policy"].includes(code)) {
+      return { label: "暂停发布中", tone: "warning" };
+    }
+    if (["wait_ci", "wait_ci_start", "ready_auto_merge"].includes(code)) {
+      return { label: "等待外部结果", tone: "progress" };
+    }
+    return { label: "继续排查", tone: "warning" };
+  }
+
+  function proposalGovernanceState(proposal: any) {
+    if (proposal?.type === "incident_followup") {
+      if (proposal?.status === "draft") return { label: "需要立即审核", tone: "ready" };
+      if (proposal?.status === "approved") return { label: "需要立即处理", tone: "critical" };
+      if (proposal?.status === "applied") return { label: "等待外部结果", tone: "progress" };
+      if (proposal?.status === "rejected") return { label: "暂停发布中", tone: "warning" };
+    }
+    return { label: "继续排查", tone: "warning" };
   }
 
   function configCheckBadge(check: any) {
@@ -312,6 +472,116 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
   const recentAutoRollbackRows = autoRollbackEvents.slice(0, 4);
   const recentBlockedRows = blockedVerifications.slice(0, 4);
   const incidentProposals = recentProposals.items.filter((p: any) => p.type === "incident_followup");
+  const activeRepoChanges = repoChanges.items.filter((item) => !["merged", "reverted", "cancelled"].includes(item.status));
+  const repoChangesWithCi = repoChanges.items.filter((item) => item.ciStatus && item.ciStatus !== "not_started");
+  const repoChangesWithWorkflow = repoChanges.items.filter((item) => item.workflowRunUrl);
+  const repoChangesWithFailures = repoChanges.items.filter((item) => (item.failedJobs?.length ?? 0) > 0);
+  const mergeCandidates = repoChanges.items.filter((item) => item.status === "merge_candidate");
+  const autoMergeCandidates = repoChanges.items.filter((item) => item.status === "auto_merge_candidate");
+  const revertCandidates = repoChanges.items.filter((item) => item.status === "revert_candidate");
+  const readyAutoMergeCount = repoChanges.items.filter((item) => item.recommendedNextStep?.code === "ready_auto_merge").length;
+  const waitCiCount = repoChanges.items.filter((item) =>
+    ["wait_ci", "wait_ci_start"].includes(String(item.recommendedNextStep?.code || "")),
+  ).length;
+  const blockedPolicyCount = repoChanges.items.filter((item) =>
+    ["blocked_auto_merge_policy", "blocked_revert_policy"].includes(String(item.recommendedNextStep?.code || "")),
+  ).length;
+  const readyRevertCount = repoChanges.items.filter((item) => item.recommendedNextStep?.code === "auto_revert_ready").length;
+  const matchesRepoNext = (code: string | undefined, bucket: string | undefined) => {
+    if (!bucket) return true;
+    if (bucket === "ready_auto_merge") return code === "ready_auto_merge";
+    if (bucket === "wait_ci") return ["wait_ci", "wait_ci_start"].includes(String(code || ""));
+    if (bucket === "blocked_policy") return ["blocked_auto_merge_policy", "blocked_revert_policy"].includes(String(code || ""));
+    if (bucket === "ready_revert") return code === "auto_revert_ready";
+    return true;
+  };
+  const nextStepPriority = (item: any) => {
+    const code = String(item?.recommendedNextStep?.code || "");
+    const map: Record<string, number> = {
+      auto_revert_ready: 100,
+      blocked_revert_policy: 95,
+      blocked_auto_merge_policy: 90,
+      ready_auto_merge: 85,
+      investigate_ci: 80,
+      ready_for_review: 70,
+      wait_auto_merge_labeling: 65,
+      wait_ci: 60,
+      wait_ci_start: 55,
+      wait_risk_threshold: 50,
+      review_revert_pr: 45,
+      revert_pr_open: 45,
+      wait_candidate_promotion: 40,
+      open_pr: 35,
+      monitor: 20,
+      done_merged: 10,
+      done_reverted: 5,
+      done_cancelled: 0,
+    };
+    return map[code] ?? 1;
+  };
+  const statusPriority = (statusValue: string | undefined) => {
+    const map: Record<string, number> = {
+      revert_candidate: 100,
+      auto_merge_candidate: 90,
+      merge_candidate: 80,
+      ci_failed: 70,
+      ci_running: 60,
+      ci_passed: 55,
+      pr_opened: 50,
+      draft: 40,
+      merged: 30,
+      reverted: 20,
+      cancelled: 10,
+    };
+    return map[String(statusValue || "")] ?? 0;
+  };
+  const priorityReason = (item: any) => {
+    const code = String(item?.recommendedNextStep?.code || "");
+    if (code === "auto_revert_ready") return "priority: ready to revert";
+    if (["blocked_revert_policy", "blocked_auto_merge_policy"].includes(code)) return "priority: blocked by policy";
+    if (code === "ready_auto_merge") return "priority: ready to auto-merge";
+    if (code === "investigate_ci" || item?.status === "ci_failed") return "priority: investigate ci failure";
+    if (Number(item?.postMergeRiskCount || 0) > 0) return `priority: risk ${Number(item.postMergeRiskCount)}`;
+    if (["wait_ci", "wait_ci_start"].includes(code)) return "priority: waiting for ci";
+    if (code === "ready_for_review") return "priority: ready for review";
+    return "priority: recent activity";
+  };
+  const compareRepoItems = (a: any, b: any) => {
+    const nextDelta = nextStepPriority(b) - nextStepPriority(a);
+    if (nextDelta !== 0) return nextDelta;
+    const statusDelta = statusPriority(b.status) - statusPriority(a.status);
+    if (statusDelta !== 0) return statusDelta;
+    const riskDelta = Number(b.postMergeRiskCount || 0) - Number(a.postMergeRiskCount || 0);
+    if (riskDelta !== 0) return riskDelta;
+    return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+  };
+  const sortedRepoItems = [...repoChanges.items].sort(compareRepoItems);
+  const filteredRepoItems = sortedRepoItems.filter((item) => matchesRepoNext(item.recommendedNextStep?.code, repoNext));
+  const sampleForBucket = (bucket: string) => sortedRepoItems.find((item) => matchesRepoNext(item.recommendedNextStep?.code, bucket)) ?? null;
+  const readyAutoMergeSample = sampleForBucket("ready_auto_merge");
+  const waitCiSample = sampleForBucket("wait_ci");
+  const blockedPolicySample = sampleForBucket("blocked_policy");
+  const readyRevertSample = sampleForBucket("ready_revert");
+  const repoNextBaseParams = new URLSearchParams();
+  if (type) repoNextBaseParams.set("type", type);
+  if (q) repoNextBaseParams.set("q", q);
+  if (status) repoNextBaseParams.set("status", status);
+  const repoNextLink = (bucket?: string) => {
+    const params = new URLSearchParams(repoNextBaseParams);
+    if (bucket) params.set("repoNext", bucket);
+    const query = params.toString();
+    return `/ops${query ? `?${query}` : ""}#repo-publish-queue`;
+  };
+  const repoNextLabel =
+    repoNext === "ready_auto_merge"
+      ? "Ready to auto-merge"
+      : repoNext === "wait_ci"
+        ? "Waiting for CI"
+        : repoNext === "blocked_policy"
+          ? "Blocked by policy"
+          : repoNext === "ready_revert"
+            ? "Ready to revert"
+            : null;
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-14">
@@ -325,6 +595,30 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
         <div className="flex gap-2">
           <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops">
             All
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/queue">
+            Queue
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/monitoring">
+            Monitoring
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/runbook">
+            Runbook
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/checklist">
+            Checklist
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/feedback">
+            Feedback
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/customer-notifications">
+            Notifications
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/support-cases">
+            Support cases
+          </Link>
+          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/alerts">
+            Alerts
           </Link>
           <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops?type=product">
             Product
@@ -350,6 +644,14 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
           <p className="mt-1 text-sm text-emerald-800">{msg}</p>
         </div>
       ) : null}
+      <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-4 text-sm text-zinc-700">
+        role {authStatus.role} · capabilities {authStatus.capabilities.join(", ") || "none"}
+        {!canPublish ? (
+          <p className="mt-1 text-xs text-amber-700">
+            Read-only mode: proposal transitions, repo publish actions, and policy updates require the `publish_content` capability.
+          </p>
+        ) : null}
+      </div>
 
       {signalsStatus.health !== "healthy" ? (
         <div
@@ -397,6 +699,229 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
       </div>
 
       <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-zinc-900">Monitoring summary</p>
+            <p className="mt-1 text-xs text-zinc-500">试运行前最小监控面：runtime、workflow、publish、purchase reconciliation。</p>
+          </div>
+          <div className="text-right text-xs text-zinc-500">
+            <p>Generated at {monitoringSummary.generatedAt}</p>
+            <p>
+              control-plane {monitoringSummary.runtime.controlPlane} · signals {monitoringSummary.runtime.signalsHealth} · cms{" "}
+              {monitoringSummary.runtime.cmsAdapter}
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium text-zinc-900">Action queue</p>
+              <p className="mt-1 text-xs text-zinc-500">首页先看最紧急的治理项，再决定是否进入监控页细看。</p>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs text-zinc-500">
+              <span>需要立即审核 {monitoringSummary.publishing.queue.counts.review_now ?? 0}</span>
+              <span>需要立即处理 {monitoringSummary.publishing.queue.counts.fix_now ?? 0}</span>
+              <span>暂停发布中 {monitoringSummary.publishing.queue.counts.hold_publish ?? 0}</span>
+            </div>
+          </div>
+          <div className="mt-4 space-y-2">
+            {monitoringSummary.publishing.queue.top.slice(0, 3).length ? (
+              monitoringSummary.publishing.queue.top.slice(0, 3).map((item) => (
+                <div
+                  key={`${String(item.targetType)}:${String(item.targetId)}:${String(item.actionCode)}`}
+                  className="rounded-xl border border-zinc-200 bg-white p-3 text-sm text-zinc-700"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-zinc-900">
+                        {String(item.targetType)}:{String(item.targetId)}
+                      </p>
+                      <p className="mt-1 text-xs text-zinc-500">
+                        priority {Number(item.priorityScore)} · {String(item.stateLabel)} · {String(item.eventAt)}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <GovernanceBadge label={String(item.stateLabel)} tone={String(item.stateTone)} />
+                      <GovernanceBadge label={String(item.actionLabel)} tone={String(item.actionTone)} />
+                    </div>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-3 text-xs">
+                    <Link className="underline" href={governanceTargetHref(String(item.targetType), String(item.targetId))}>
+                      Open target
+                    </Link>
+                    {typeof item.incidentProposalId === "string" && item.incidentProposalId ? (
+                      <Link className="underline" href={`/ops/proposals/${item.incidentProposalId}`}>
+                        Open proposal
+                      </Link>
+                    ) : null}
+                    {typeof item.repoChangeId === "string" && item.repoChangeId ? (
+                      <Link
+                        className="underline"
+                        href={governanceRepoNextHref(
+                          String(item.targetType),
+                          String(item.targetId),
+                          typeof item.repoChangeNextStepCode === "string" ? item.repoChangeNextStepCode : null,
+                        )}
+                      >
+                        Open repo change lane
+                      </Link>
+                    ) : null}
+                    <Link className="underline" href={`/ops/audit?action=${encodeURIComponent(String(item.action))}&q=${encodeURIComponent(String(item.targetId))}`}>
+                      Audit context
+                    </Link>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-xl border border-zinc-200 bg-white p-3 text-sm text-zinc-600">No urgent governance queue item.</div>
+            )}
+            <Link className="inline-flex text-xs text-zinc-900 underline" href="/ops/monitoring">
+              Open full monitoring queue
+            </Link>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+            <p className="text-xs text-zinc-500">Runtime</p>
+            <p className="mt-2 text-xl font-semibold text-zinc-900">{monitoringSummary.runtime.signalsHealth}</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              batch failures {monitoringSummary.runtime.consecutiveBatchFailures}
+              {monitoringSummary.runtime.lastBatchRunAt ? ` · last ${monitoringSummary.runtime.lastBatchRunAt}` : ""}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+            <p className="text-xs text-zinc-500">Workflow stalled</p>
+            <p className="mt-2 text-xl font-semibold text-zinc-900">{monitoringSummary.workflow.staleCount}</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              open {monitoringSummary.workflow.openCount} · in progress {monitoringSummary.workflow.inProgressCount}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+            <p className="text-xs text-zinc-500">Publish anomalies · 24h</p>
+            <p className="mt-2 text-xl font-semibold text-zinc-900">
+              {monitoringSummary.publishing.warningPublishes24h + monitoringSummary.publishing.blockedPublishes24h + monitoringSummary.publishing.rollbacks24h}
+            </p>
+            <p className="mt-1 text-xs text-zinc-500">
+              warning {monitoringSummary.publishing.warningPublishes24h} · blocked {monitoringSummary.publishing.blockedPublishes24h} · rollback{" "}
+              {monitoringSummary.publishing.rollbacks24h}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+            <p className="text-xs text-zinc-500">Purchase gaps</p>
+            <p className="mt-2 text-xl font-semibold text-zinc-900">{monitoringSummary.purchase.misalignedTargetsCount}</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              follow-up blocked {monitoringSummary.publishing.blockedFollowupsOpen} · warning {monitoringSummary.publishing.warningFollowupsOpen}
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className={`rounded-2xl border p-4 ${dependencyTone(monitoringSummary.runtime.dependencies.medusa.status)}`}>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium">Medusa probe</p>
+              <span className="rounded border border-current/20 px-2 py-0.5 text-xs">{monitoringSummary.runtime.dependencies.medusa.status}</span>
+            </div>
+            <p className="mt-2 text-xs">{monitoringSummary.runtime.dependencies.medusa.detail}</p>
+            {monitoringSummary.runtime.dependencies.medusa.baseUrl ? (
+              <p className="mt-1 text-xs opacity-80">
+                {monitoringSummary.runtime.dependencies.medusa.baseUrl}
+                {monitoringSummary.runtime.dependencies.medusa.statusCode
+                  ? ` · ${monitoringSummary.runtime.dependencies.medusa.statusCode}`
+                  : ""}
+              </p>
+            ) : null}
+          </div>
+          <div className={`rounded-2xl border p-4 ${dependencyTone(monitoringSummary.runtime.dependencies.sanity.status)}`}>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium">Sanity probe</p>
+              <span className="rounded border border-current/20 px-2 py-0.5 text-xs">{monitoringSummary.runtime.dependencies.sanity.status}</span>
+            </div>
+            <p className="mt-2 text-xs">{monitoringSummary.runtime.dependencies.sanity.detail}</p>
+            {monitoringSummary.runtime.dependencies.sanity.projectId ? (
+              <p className="mt-1 text-xs opacity-80">
+                {monitoringSummary.runtime.dependencies.sanity.projectId} / {monitoringSummary.runtime.dependencies.sanity.dataset}
+                {monitoringSummary.runtime.dependencies.sanity.statusCode
+                  ? ` · ${monitoringSummary.runtime.dependencies.sanity.statusCode}`
+                  : ""}
+              </p>
+            ) : null}
+          </div>
+        </div>
+        <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          <div className="space-y-2">
+            <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Alerts</p>
+            {monitoringSummary.alerts.length ? (
+              monitoringSummary.alerts.map((alert, index) => (
+                <div key={`${alert.title}-${index}`} className={`rounded-xl border p-3 ${monitorAlertTone(alert.level)}`}>
+                  <p className="text-sm font-medium">{alert.title}</p>
+                  <p className="mt-1 text-xs">{alert.detail}</p>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+                No active monitoring alerts in the current view.
+              </div>
+            )}
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Stale workflow samples</p>
+              {monitoringSummary.workflow.staleExamples.length ? (
+                monitoringSummary.workflow.staleExamples.map((item) => (
+                  <div key={item.id} className="rounded-xl border border-zinc-200 p-3 text-sm text-zinc-700">
+                    <p className="font-medium text-zinc-900">
+                      {item.ruleId} · {item.staleDays}d
+                    </p>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {item.targetType}:{item.targetId} · {item.priorityLevel.toUpperCase()}
+                    </p>
+                    {item.targetPath ? (
+                      <Link className="mt-2 inline-flex text-xs text-zinc-900 underline" href={item.targetPath}>
+                        Open target
+                      </Link>
+                    ) : null}
+                  </div>
+                ))
+              ) : (
+                <p className="rounded-xl border border-zinc-200 p-3 text-sm text-zinc-600">No stale in-progress recommendation.</p>
+              )}
+            </div>
+            <div className="space-y-2">
+              <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Top purchase gaps</p>
+              {monitoringSummary.purchase.topGaps.length ? (
+                monitoringSummary.purchase.topGaps.map((item) => (
+                  <div key={`${item.targetType}:${item.targetId}`} className="rounded-xl border border-zinc-200 p-3 text-sm text-zinc-700">
+                    <p className="font-medium text-zinc-900">
+                      {item.title} · {item.gap > 0 ? "+" : ""}
+                      {item.gap}
+                    </p>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      event {item.eventPurchaseCount} · snapshot {item.snapshotPurchaseCount} · {item.status}
+                    </p>
+                    {item.targetPath ? (
+                      <Link className="mt-2 inline-flex text-xs text-zinc-900 underline" href={item.targetPath}>
+                        Open target
+                      </Link>
+                    ) : null}
+                  </div>
+                ))
+              ) : (
+                <p className="rounded-xl border border-zinc-200 p-3 text-sm text-zinc-600">No purchase reconciliation gap in the current view.</p>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-xs text-zinc-600">
+          Thresholds · stale warning {monitoringSummary.workflow.thresholds.warning}, critical {monitoringSummary.workflow.thresholds.critical}
+          {" · "}publish warning warning {monitoringSummary.publishing.thresholds.warningPublishes24h.warning}, critical{" "}
+          {monitoringSummary.publishing.thresholds.warningPublishes24h.critical}
+          {" · "}blocked publish {monitoringSummary.publishing.thresholds.blockedPublishes24h.critical}
+          {" · "}rollback {monitoringSummary.publishing.thresholds.rollbacks24h.critical}
+          {" · "}purchase gap abs warning {monitoringSummary.purchase.thresholdAbsGap.warning}, critical{" "}
+          {monitoringSummary.purchase.thresholdAbsGap.critical}
+        </div>
+      </div>
+
+      <div id="auto-action-policy" className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-sm font-medium text-zinc-900">Current auth</p>
@@ -472,6 +997,539 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
             </div>
           </div>
         ) : null}
+      </div>
+
+      <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-zinc-900">Auto-action policy</p>
+            <p className="mt-1 text-xs text-zinc-500">控制 auto-merge / auto-revert 的启用开关、target 范围和 trigger 白名单。</p>
+          </div>
+        </div>
+        <form action={onUpdateAutoActionPolicy} className="mt-4 grid gap-4 lg:grid-cols-2">
+          <div className="rounded-xl border border-zinc-200 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium text-zinc-900">Auto merge</p>
+              <select
+                name="autoMergeEnabled"
+                defaultValue={String(autoActionPolicy.policy.autoMerge.enabled)}
+                className="rounded border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700"
+              >
+                <option value="true">enabled</option>
+                <option value="false">disabled</option>
+              </select>
+            </div>
+            <label className="mt-4 block text-xs text-zinc-500">
+              target types
+              <input
+                name="autoMergeTargetTypes"
+                defaultValue={autoActionPolicy.policy.autoMerge.allowedTargetTypes.join(", ")}
+                className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+              />
+            </label>
+            <label className="mt-3 block text-xs text-zinc-500">
+              triggers
+              <input
+                name="autoMergeTriggers"
+                defaultValue={autoActionPolicy.policy.autoMerge.allowedTriggers.join(", ")}
+                className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+              />
+            </label>
+            <label className="mt-3 block text-xs text-zinc-500">
+              target ids
+              <input
+                name="autoMergeTargetIds"
+                defaultValue={autoActionPolicy.policy.autoMerge.allowedTargetIds.join(", ")}
+                className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+                placeholder="empty = all allowed ids"
+              />
+            </label>
+          </div>
+          <div className="rounded-xl border border-zinc-200 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium text-zinc-900">Auto revert</p>
+              <select
+                name="autoRevertEnabled"
+                defaultValue={String(autoActionPolicy.policy.autoRevert.enabled)}
+                className="rounded border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700"
+              >
+                <option value="true">enabled</option>
+                <option value="false">disabled</option>
+              </select>
+            </div>
+            <label className="mt-4 block text-xs text-zinc-500">
+              target types
+              <input
+                name="autoRevertTargetTypes"
+                defaultValue={autoActionPolicy.policy.autoRevert.allowedTargetTypes.join(", ")}
+                className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+              />
+            </label>
+            <label className="mt-3 block text-xs text-zinc-500">
+              triggers
+              <input
+                name="autoRevertTriggers"
+                defaultValue={autoActionPolicy.policy.autoRevert.allowedTriggers.join(", ")}
+                className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+              />
+            </label>
+            <label className="mt-3 block text-xs text-zinc-500">
+              target ids
+              <input
+                name="autoRevertTargetIds"
+                defaultValue={autoActionPolicy.policy.autoRevert.allowedTargetIds.join(", ")}
+                className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+                placeholder="empty = all allowed ids"
+              />
+            </label>
+            <label className="mt-3 block text-xs text-zinc-500">
+              min risk count
+              <input
+                type="number"
+                min={1}
+                name="autoRevertMinRiskCount"
+                defaultValue={autoActionPolicy.policy.autoRevert.minRiskCount}
+                className="mt-1 w-full rounded border border-zinc-200 px-3 py-2 text-sm text-zinc-900"
+              />
+            </label>
+          </div>
+          <div className="lg:col-span-2 flex justify-end">
+            <button
+              disabled={!canPublish}
+              title={!canPublish ? "Requires publish_content capability" : undefined}
+              className="rounded border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Save policy
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div id="repo-publish-queue" className="mt-4 rounded-2xl border border-zinc-200 bg-white">
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-zinc-200 px-4 py-3">
+          <div>
+            <p className="text-sm font-medium text-zinc-900">Repo publish queue</p>
+            <p className="mt-1 text-xs text-zinc-500">从 incident proposal 升级出来的代码变更候选。</p>
+          </div>
+          <form action={onSyncActiveRepoChanges}>
+            <button
+              disabled={!canPublish}
+              title={!canPublish ? "Requires publish_content capability" : undefined}
+              className="rounded border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Sync active
+            </button>
+          </form>
+        </div>
+        <div className="grid gap-4 border-b border-zinc-200 px-4 py-4 sm:grid-cols-6">
+          <div className="rounded-xl bg-zinc-50 p-4">
+            <p className="text-xs text-zinc-500">Open repo changes</p>
+            <p className="mt-2 text-2xl font-semibold text-zinc-900">{activeRepoChanges.length}</p>
+          </div>
+          <div className="rounded-xl bg-zinc-50 p-4">
+            <p className="text-xs text-zinc-500">Merge candidates</p>
+            <p className="mt-2 text-2xl font-semibold text-zinc-900">{mergeCandidates.length}</p>
+          </div>
+          <div className="rounded-xl bg-zinc-50 p-4">
+            <p className="text-xs text-zinc-500">Auto-merge candidates</p>
+            <p className="mt-2 text-2xl font-semibold text-zinc-900">{autoMergeCandidates.length}</p>
+          </div>
+          <div className="rounded-xl bg-zinc-50 p-4">
+            <p className="text-xs text-zinc-500">Revert candidates</p>
+            <p className="mt-2 text-2xl font-semibold text-zinc-900">{revertCandidates.length}</p>
+          </div>
+          <div className="rounded-xl bg-zinc-50 p-4">
+            <p className="text-xs text-zinc-500">Workflow attached</p>
+            <p className="mt-2 text-2xl font-semibold text-zinc-900">{repoChangesWithWorkflow.length}</p>
+          </div>
+          <div className="rounded-xl bg-zinc-50 p-4">
+            <p className="text-xs text-zinc-500">Workflow failures</p>
+            <p className="mt-2 text-2xl font-semibold text-zinc-900">{repoChangesWithFailures.length}</p>
+            <p className="mt-1 text-xs text-zinc-500">{repoChangesWithCi.length} items with CI/check status</p>
+          </div>
+        </div>
+        <div className="grid gap-4 border-b border-zinc-200 px-4 py-4 sm:grid-cols-4">
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+            <p className="text-xs text-emerald-700">Ready to auto-merge</p>
+            <p className="mt-2 text-2xl font-semibold text-emerald-900">{readyAutoMergeCount}</p>
+            <p className="mt-1 text-xs text-emerald-700">已经满足当前自动 merge 门槛</p>
+            {readyAutoMergeSample ? (
+              <div className="mt-2 text-[11px] text-emerald-800">
+                <p>
+                  sample:{" "}
+                  {targetHref({ type: readyAutoMergeSample.targetType ?? undefined, id: readyAutoMergeSample.targetId ?? undefined }) ? (
+                    <Link
+                      className="underline underline-offset-4"
+                      href={targetHref({ type: readyAutoMergeSample.targetType ?? undefined, id: readyAutoMergeSample.targetId ?? undefined })!}
+                    >
+                      {readyAutoMergeSample.title ?? readyAutoMergeSample.id}
+                    </Link>
+                  ) : (
+                    readyAutoMergeSample.title ?? readyAutoMergeSample.id
+                  )}
+                </p>
+                <p className="mt-1">{priorityReason(readyAutoMergeSample)}</p>
+                <div className="mt-2">
+                  <NextStepActions
+                    change={readyAutoMergeSample}
+                    onSyncRepoChange={onSyncRepoChange}
+                    onOpenRepoChangePullRequest={onOpenRepoChangePullRequest}
+                    onOpenRepoChangeRevertPullRequest={onOpenRepoChangeRevertPullRequest}
+                    canPublish={canPublish}
+                  />
+                </div>
+              </div>
+            ) : null}
+            <Link className="mt-3 inline-flex text-[11px] font-medium text-emerald-800 underline underline-offset-4" href={repoNextLink("ready_auto_merge")}>
+              Open bucket
+            </Link>
+          </div>
+          <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
+            <p className="text-xs text-sky-700">Waiting for CI</p>
+            <p className="mt-2 text-2xl font-semibold text-sky-900">{waitCiCount}</p>
+            <p className="mt-1 text-xs text-sky-700">等待 CI 启动或完成</p>
+            {waitCiSample ? (
+              <div className="mt-2 text-[11px] text-sky-800">
+                <p>
+                  sample:{" "}
+                  {targetHref({ type: waitCiSample.targetType ?? undefined, id: waitCiSample.targetId ?? undefined }) ? (
+                    <Link
+                      className="underline underline-offset-4"
+                      href={targetHref({ type: waitCiSample.targetType ?? undefined, id: waitCiSample.targetId ?? undefined })!}
+                    >
+                      {waitCiSample.title ?? waitCiSample.id}
+                    </Link>
+                  ) : (
+                    waitCiSample.title ?? waitCiSample.id
+                  )}
+                </p>
+                <p className="mt-1">{priorityReason(waitCiSample)}</p>
+                <div className="mt-2">
+                  <NextStepActions
+                    change={waitCiSample}
+                    onSyncRepoChange={onSyncRepoChange}
+                    onOpenRepoChangePullRequest={onOpenRepoChangePullRequest}
+                    onOpenRepoChangeRevertPullRequest={onOpenRepoChangeRevertPullRequest}
+                    canPublish={canPublish}
+                  />
+                </div>
+              </div>
+            ) : null}
+            <Link className="mt-3 inline-flex text-[11px] font-medium text-sky-800 underline underline-offset-4" href={repoNextLink("wait_ci")}>
+              Open bucket
+            </Link>
+          </div>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+            <p className="text-xs text-amber-700">Blocked by policy</p>
+            <p className="mt-2 text-2xl font-semibold text-amber-900">{blockedPolicyCount}</p>
+            <p className="mt-1 text-xs text-amber-700">命中 whitelist / trigger 治理限制</p>
+            {blockedPolicySample ? (
+              <div className="mt-2 text-[11px] text-amber-800">
+                <p>
+                  sample:{" "}
+                  {targetHref({ type: blockedPolicySample.targetType ?? undefined, id: blockedPolicySample.targetId ?? undefined }) ? (
+                    <Link
+                      className="underline underline-offset-4"
+                      href={targetHref({ type: blockedPolicySample.targetType ?? undefined, id: blockedPolicySample.targetId ?? undefined })!}
+                    >
+                      {blockedPolicySample.title ?? blockedPolicySample.id}
+                    </Link>
+                  ) : (
+                    blockedPolicySample.title ?? blockedPolicySample.id
+                  )}
+                </p>
+                <p className="mt-1">{priorityReason(blockedPolicySample)}</p>
+                <div className="mt-2">
+                  <NextStepActions
+                    change={blockedPolicySample}
+                    onSyncRepoChange={onSyncRepoChange}
+                    onOpenRepoChangePullRequest={onOpenRepoChangePullRequest}
+                    onOpenRepoChangeRevertPullRequest={onOpenRepoChangeRevertPullRequest}
+                    canPublish={canPublish}
+                  />
+                </div>
+              </div>
+            ) : null}
+            <Link className="mt-3 inline-flex text-[11px] font-medium text-amber-800 underline underline-offset-4" href={repoNextLink("blocked_policy")}>
+              Open bucket
+            </Link>
+          </div>
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
+            <p className="text-xs text-rose-700">Ready to revert</p>
+            <p className="mt-2 text-2xl font-semibold text-rose-900">{readyRevertCount}</p>
+            <p className="mt-1 text-xs text-rose-700">风险阈值已满足，可继续止损</p>
+            {readyRevertSample ? (
+              <div className="mt-2 text-[11px] text-rose-800">
+                <p>
+                  sample:{" "}
+                  {targetHref({ type: readyRevertSample.targetType ?? undefined, id: readyRevertSample.targetId ?? undefined }) ? (
+                    <Link
+                      className="underline underline-offset-4"
+                      href={targetHref({ type: readyRevertSample.targetType ?? undefined, id: readyRevertSample.targetId ?? undefined })!}
+                    >
+                      {readyRevertSample.title ?? readyRevertSample.id}
+                    </Link>
+                  ) : (
+                    readyRevertSample.title ?? readyRevertSample.id
+                  )}
+                </p>
+                <p className="mt-1">{priorityReason(readyRevertSample)}</p>
+                <div className="mt-2">
+                  <NextStepActions
+                    change={readyRevertSample}
+                    onSyncRepoChange={onSyncRepoChange}
+                    onOpenRepoChangePullRequest={onOpenRepoChangePullRequest}
+                    onOpenRepoChangeRevertPullRequest={onOpenRepoChangeRevertPullRequest}
+                    canPublish={canPublish}
+                  />
+                </div>
+              </div>
+            ) : null}
+            <Link className="mt-3 inline-flex text-[11px] font-medium text-rose-800 underline underline-offset-4" href={repoNextLink("ready_revert")}>
+              Open bucket
+            </Link>
+          </div>
+        </div>
+        {repoNextLabel ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3">
+            <div>
+              <p className="text-xs text-zinc-600">
+                Filtered view: <span className="font-medium text-zinc-900">{repoNextLabel}</span> · {filteredRepoItems.length} items
+              </p>
+              <p className="mt-1 text-[11px] text-zinc-500">sorted by next step → status → risk → updated time</p>
+            </div>
+            <Link className="rounded border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700" href={repoNextLink()}>
+              Clear filter
+            </Link>
+          </div>
+        ) : null}
+        <div className="divide-y divide-zinc-200">
+          {filteredRepoItems.length ? (
+            filteredRepoItems.map((change) => (
+              <div key={change.id} className="px-4 py-4">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-medium text-zinc-900">{change.title ?? change.id}</p>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      <code className="rounded bg-zinc-100 px-1">{change.id}</code> · {change.status}
+                      {change.targetType && change.targetId ? ` · ${change.targetType}:${change.targetId}` : ""}
+                    </p>
+                    {change.summary ? <p className="mt-2 text-sm text-zinc-700">{change.summary}</p> : null}
+                    {change.recommendedNextStep ? (
+                      <>
+                        <p
+                          className={`mt-2 inline-flex rounded px-2 py-1 text-xs ${
+                            change.recommendedNextStep.tone === "ready"
+                              ? "bg-emerald-50 text-emerald-700"
+                              : change.recommendedNextStep.tone === "warning"
+                                ? "bg-rose-50 text-rose-700"
+                                : change.recommendedNextStep.tone === "hold"
+                                  ? "bg-amber-50 text-amber-700"
+                                  : change.recommendedNextStep.tone === "progress"
+                                    ? "bg-sky-50 text-sky-700"
+                                    : "bg-zinc-100 text-zinc-700"
+                          }`}
+                        >
+                          next: {change.recommendedNextStep.label}
+                        </p>
+                        <p className="mt-2">
+                          <GovernanceBadge label={`state: ${repoGovernanceState(change).label}`} tone={repoGovernanceState(change).tone} className="py-1" />
+                        </p>
+                        <div>
+                          <NextStepActions
+                            change={change}
+                            onSyncRepoChange={onSyncRepoChange}
+                            onOpenRepoChangePullRequest={onOpenRepoChangePullRequest}
+                            onOpenRepoChangeRevertPullRequest={onOpenRepoChangeRevertPullRequest}
+                            canPublish={canPublish}
+                          />
+                        </div>
+                        <p className="mt-2 text-[11px] text-zinc-500">{priorityReason(change)}</p>
+                      </>
+                    ) : null}
+                    <p className="mt-1 text-xs text-zinc-500">
+                      branch: <code className="rounded bg-zinc-100 px-1">{change.branchName ?? "n/a"}</code>
+                      {change.proposalId ? ` · proposal ${change.proposalId}` : ""}
+                    </p>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      ci: {change.ciStatus ?? "not_started"} · updated {change.updatedAt}
+                    </p>
+                    {change.workflowRunUrl ? (
+                      <p className="mt-1 text-xs text-zinc-500">
+                        workflow: {change.workflowName ?? "run"} · {change.workflowStatus ?? "unknown"}
+                        {change.workflowConclusion ? `/${change.workflowConclusion}` : ""}
+                        {change.workflowUpdatedAt ? ` · ${change.workflowUpdatedAt}` : ""}
+                      </p>
+                    ) : null}
+                    {change.lastSyncedAt ? (
+                      <p className="mt-1 text-xs text-zinc-500">
+                        sync: {change.syncState ?? "ok"} · {change.lastSyncedAt}
+                        {change.syncMessage ? ` · ${change.syncMessage}` : ""}
+                      </p>
+                    ) : null}
+                    {change.commitSha ? (
+                      <p className="mt-1 text-xs text-zinc-500">
+                        sha: <code className="rounded bg-zinc-100 px-1">{change.commitSha.slice(0, 12)}</code>
+                        {change.prNumber ? ` · pr #${change.prNumber}` : ""}
+                        {change.repoName ? ` · ${change.repoOwner}/${change.repoName}` : ""}
+                      </p>
+                    ) : null}
+                    {typeof change.prIsDraft === "boolean" ? (
+                      <p className="mt-1 text-xs text-zinc-500">pr mode: {change.prIsDraft ? "draft" : "ready"}</p>
+                    ) : null}
+                    {change.mergedAt ? (
+                      <p className="mt-1 text-xs text-emerald-700">merged at: {change.mergedAt}</p>
+                    ) : null}
+                    {change.readyForReviewAt ? (
+                      <p className="mt-1 text-xs text-sky-700">ready for review: {change.readyForReviewAt}</p>
+                    ) : null}
+                    {change.autoMergeCandidateAt ? (
+                      <p className="mt-1 text-xs text-violet-700">auto-merge candidate: {change.autoMergeCandidateAt}</p>
+                    ) : null}
+                    {change.autoMergedAt ? (
+                      <p className="mt-1 text-xs text-emerald-700">
+                        auto merged: {change.autoMergedAt}
+                        {change.mergeMethod ? ` · ${change.mergeMethod}` : ""}
+                        {change.mergeCommitSha ? ` · ${change.mergeCommitSha.slice(0, 12)}` : ""}
+                      </p>
+                    ) : null}
+                    {change.postMergeRiskAt ? (
+                      <p className="mt-1 text-xs text-rose-700">
+                        post-merge risk: {change.postMergeRiskAt}
+                        {change.postMergeRiskCount ? ` · count ${change.postMergeRiskCount}` : ""}
+                        {change.postMergeRiskSummary ? ` · ${change.postMergeRiskSummary}` : ""}
+                      </p>
+                    ) : null}
+                    {change.revertedAt ? (
+                      <p className="mt-1 text-xs text-amber-700">reverted at: {change.revertedAt}</p>
+                    ) : null}
+                    {change.revertPrUrl ? (
+                      <p className="mt-1 text-xs text-zinc-500">
+                        revert: pr #{change.revertPrNumber ?? "n/a"} · {change.revertPrState ?? "open"}
+                        {change.revertPrMergedAt ? ` · merged ${change.revertPrMergedAt}` : ""}
+                        {change.revertCommitSha ? ` · ${change.revertCommitSha.slice(0, 12)}` : ""}
+                      </p>
+                    ) : null}
+                    {change.checks?.length ? (
+                      <p className="mt-1 text-xs text-zinc-500">
+                        checks: {change.checks.slice(0, 3).map((check) => `${check.name}:${check.conclusion ?? check.status}`).join(" · ")}
+                      </p>
+                    ) : null}
+                    {change.failedJobs?.length ? (
+                      <p className="mt-1 text-xs text-rose-700">
+                        failed jobs: {change.failedJobs.slice(0, 3).map((job) => `${job.name}:${job.conclusion ?? job.status}`).join(" · ")}
+                      </p>
+                    ) : null}
+                    {change.autoActionGate?.autoMerge?.snapshot ? (
+                      <GateSnapshotCard
+                        title="auto-merge gate"
+                        allowed={change.autoActionGate.autoMerge.allowed}
+                        tone={change.autoActionGate.autoMerge.allowed ? "emerald" : "amber"}
+                        sections={[
+                          change.autoActionGate.autoMerge.snapshot.policy,
+                          change.autoActionGate.autoMerge.snapshot.ci,
+                          change.autoActionGate.autoMerge.snapshot.labels,
+                        ]}
+                      />
+                    ) : change.autoActionGate?.autoMerge ? (
+                      <p className={`mt-1 text-xs ${change.autoActionGate.autoMerge.allowed ? "text-emerald-700" : "text-amber-700"}`}>
+                        auto-merge gate: {change.autoActionGate.autoMerge.allowed ? "allow" : "hold"} ·{" "}
+                        {change.autoActionGate.autoMerge.reasons.join(" · ")}
+                      </p>
+                    ) : null}
+                    {change.autoActionGate?.autoRevert?.snapshot ? (
+                      <GateSnapshotCard
+                        title="auto-revert gate"
+                        allowed={change.autoActionGate.autoRevert.allowed}
+                        tone={change.autoActionGate.autoRevert.allowed ? "rose" : "zinc"}
+                        sections={[
+                          change.autoActionGate.autoRevert.snapshot.policy,
+                          change.autoActionGate.autoRevert.snapshot.risk,
+                          change.autoActionGate.autoRevert.snapshot.execution,
+                        ]}
+                      />
+                    ) : change.autoActionGate?.autoRevert ? (
+                      <p className={`mt-1 text-xs ${change.autoActionGate.autoRevert.allowed ? "text-rose-700" : "text-zinc-500"}`}>
+                        auto-revert gate: {change.autoActionGate.autoRevert.allowed ? "allow" : "hold"} ·{" "}
+                        {change.autoActionGate.autoRevert.reasons.join(" · ")}
+                      </p>
+                    ) : null}
+                    {change.prLabels?.length ? (
+                      <p className="mt-1 text-xs text-zinc-500">labels: {change.prLabels.join(" · ")}</p>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap items-start gap-2 text-xs">
+                    <span className="rounded border border-zinc-200 bg-zinc-50 px-2 py-1 text-zinc-700">
+                      {change.trigger ?? "incident"}
+                    </span>
+                    {change.status === "merge_candidate" ? (
+                      <span className="rounded border border-sky-200 bg-sky-50 px-2 py-1 text-sky-700">merge candidate</span>
+                    ) : null}
+                    {change.status === "auto_merge_candidate" ? (
+                      <span className="rounded border border-violet-200 bg-violet-50 px-2 py-1 text-violet-700">auto-merge candidate</span>
+                    ) : null}
+                    {change.status === "revert_candidate" ? (
+                      <span className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-rose-700">revert candidate</span>
+                    ) : null}
+                    {change.prUrl ? (
+                      <a className="rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-700" href={change.prUrl}>
+                        Open PR
+                      </a>
+                    ) : null}
+                    {!change.prUrl ? (
+                      <form action={onOpenRepoChangePullRequest}>
+                        <input type="hidden" name="id" value={change.id} />
+                        <button
+                          disabled={!canPublish}
+                          title={!canPublish ? "Requires publish_content capability" : undefined}
+                          className="rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Create PR
+                        </button>
+                      </form>
+                    ) : null}
+                    {["merged", "revert_candidate"].includes(change.status) && !change.revertPrUrl ? (
+                      <form action={onOpenRepoChangeRevertPullRequest}>
+                        <input type="hidden" name="id" value={change.id} />
+                        <button
+                          disabled={!canPublish}
+                          title={!canPublish ? "Requires publish_content capability" : undefined}
+                          className="rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Create revert PR
+                        </button>
+                      </form>
+                    ) : null}
+                    {change.revertPrUrl ? (
+                      <a className="rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-700" href={change.revertPrUrl}>
+                        Open revert PR
+                      </a>
+                    ) : null}
+                    {change.workflowRunUrl ? (
+                      <a className="rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-700" href={change.workflowRunUrl}>
+                        Open run
+                      </a>
+                    ) : null}
+                    <form action={onSyncRepoChange}>
+                      <input type="hidden" name="id" value={change.id} />
+                      <button
+                        disabled={!canPublish}
+                        title={!canPublish ? "Requires publish_content capability" : undefined}
+                        className="rounded border border-zinc-200 bg-white px-2 py-1 text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Sync GitHub
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="px-4 py-4">
+              <p className="text-sm text-zinc-600">No repo publish candidates yet. Approve an incident proposal to seed the queue.</p>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="mt-4 rounded-2xl border border-zinc-200 bg-white">
@@ -675,6 +1733,7 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                         {proposal.severity ?? "warning"}
                       </span>
                       <span className="rounded bg-white px-2 py-0.5 text-xs text-zinc-700">{proposal.status}</span>
+                      <GovernanceBadge label={proposalGovernanceState(proposal).label} tone={proposalGovernanceState(proposal).tone} />
                     </div>
                     <p className="mt-2 text-sm font-medium text-zinc-900">{proposal.summary ?? proposal.suggestion}</p>
                     <p className="mt-1 text-xs text-zinc-500">
@@ -939,21 +1998,28 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                       <div className="mt-3 rounded-xl bg-zinc-50 p-3 text-xs text-zinc-600">
                         <p>
                           Window {rec.context.snapshot.windowDays}d · Views {rec.context.snapshot.metrics.views} · CTA{" "}
-                          {fmtPercent(rec.context.snapshot.rates.ctaRate)} · ATC {fmtPercent(rec.context.snapshot.rates.addToCartRate)}
+                          {fmtPercent(rec.context.snapshot.rates.ctaRate)} · ATC {fmtPercent(rec.context.snapshot.rates.addToCartRate)} · Purchase{" "}
+                          {fmtPercent(rec.context.snapshot.rates.purchaseRate)}
                         </p>
                         {rec.context.delta ? (
                           <p className="mt-1">
                             vs prev: CTA {fmtPts(rec.context.delta.rates.ctaRate)} · ATC{" "}
-                            {fmtPts(rec.context.delta.rates.addToCartRate)}
+                            {fmtPts(rec.context.delta.rates.addToCartRate)} · Purchase {fmtPts(rec.context.delta.rates.purchaseRate)}
                           </p>
                         ) : (
                           <p className="mt-1">vs prev: n/a</p>
                         )}
+                        {rec.context.optimizationGoal ? <p className="mt-2">目标：{rec.context.optimizationGoal}</p> : null}
                         {rec.context.focusAreas?.length ? (
                           <p className="mt-2">
                             关注点：{rec.context.focusAreas.map(focusLabel).join("、")}
                           </p>
                         ) : null}
+                        {rec.context.actionHints?.length ? (
+                          <p className="mt-2">建议：{rec.context.actionHints.join("；")}</p>
+                        ) : null}
+                        {rec.context.referencePattern ? <p className="mt-2">参考模式：{rec.context.referencePattern.summary}</p> : null}
+                        {rec.successPattern ? <p className="mt-2">成功模式：{rec.successPattern.summary}</p> : null}
                       </div>
                     ) : null}
                     <form action={onResolveRecommendation} className="mt-3 space-y-2">
@@ -1077,7 +2143,11 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                         placeholder="提案备注（可选）"
                         className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs"
                       />
-                      <button className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs">
+                      <button
+                        disabled={!canPublish}
+                        title={!canPublish ? "Requires publish_content capability" : undefined}
+                        className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                      >
                         Create proposal
                       </button>
                     </form>
@@ -1099,6 +2169,9 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                     <p className="text-sm text-zinc-900">
                       <code className="rounded bg-zinc-100 px-1">{p.id}</code> · {p.type === "incident_followup" ? p.anomalyKind : p.ruleId} ·{" "}
                       <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-700">{p.status}</span>
+                    </p>
+                    <p className="mt-1">
+                      <GovernanceBadge label={proposalGovernanceState(p).label} tone={proposalGovernanceState(p).tone} />
                     </p>
                     <p className="mt-1 text-xs text-zinc-500">
                       {p.type === "incident_followup"
@@ -1209,11 +2282,23 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                             className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs"
                           />
                           {p.status === "draft" ? (
-                            <button className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs" name="status" value="approved">
+                            <button
+                              disabled={!canPublish}
+                              title={!canPublish ? "Requires publish_content capability" : undefined}
+                              className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                              name="status"
+                              value="approved"
+                            >
                               Approve
                             </button>
                           ) : null}
-                          <button className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs" name="status" value="rejected">
+                          <button
+                            disabled={!canPublish}
+                            title={!canPublish ? "Requires publish_content capability" : undefined}
+                            className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                            name="status"
+                            value="rejected"
+                          >
                             Reject
                           </button>
                         </form>
@@ -1235,17 +2320,35 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
                           />
                         ) : null}
                         {p.status === "draft" ? (
-                          <button className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs" name="status" value="approved">
+                          <button
+                            disabled={!canPublish}
+                            title={!canPublish ? "Requires publish_content capability" : undefined}
+                            className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                            name="status"
+                            value="approved"
+                          >
                             Approve
                           </button>
                         ) : null}
                         {p.status !== "rejected" ? (
-                          <button className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs" name="status" value="rejected">
+                          <button
+                            disabled={!canPublish}
+                            title={!canPublish ? "Requires publish_content capability" : undefined}
+                            className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                            name="status"
+                            value="rejected"
+                          >
                             Reject
                           </button>
                         ) : null}
                         {p.status === "approved" ? (
-                          <button className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs" name="status" value="applied">
+                          <button
+                            disabled={!canPublish}
+                            title={!canPublish ? "Requires publish_content capability" : undefined}
+                            className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                            name="status"
+                            value="applied"
+                          >
                             Mark applied
                           </button>
                         ) : null}
@@ -1367,4 +2470,122 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
       </div>
     </div>
   );
+}
+
+function GateSnapshotCard({
+  title,
+  allowed,
+  tone,
+  sections,
+}: {
+  title: string;
+  allowed: boolean;
+  tone: "emerald" | "amber" | "rose" | "zinc";
+  sections: Array<{ ok: boolean; label: string; detail: string }>;
+}) {
+  const toneClass =
+    tone === "emerald"
+      ? "border-emerald-200 bg-emerald-50"
+      : tone === "amber"
+        ? "border-amber-200 bg-amber-50"
+        : tone === "rose"
+          ? "border-rose-200 bg-rose-50"
+          : "border-zinc-200 bg-zinc-50";
+  const pillClass = allowed
+    ? tone === "rose"
+      ? "border-rose-200 bg-white text-rose-700"
+      : "border-emerald-200 bg-white text-emerald-700"
+    : "border-zinc-200 bg-white text-zinc-600";
+
+  return (
+    <div className={`mt-2 rounded-xl border p-3 ${toneClass}`}>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-medium text-zinc-900">{title}</p>
+        <span className={`rounded px-2 py-0.5 text-[11px] border ${pillClass}`}>{allowed ? "allow" : "hold"}</span>
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+        {sections.map((section) => (
+          <div key={`${title}-${section.label}`} className="rounded border border-white/70 bg-white/80 px-2 py-2">
+            <p className="text-[11px] uppercase tracking-wide text-zinc-500">{section.label}</p>
+            <p className={`mt-1 text-[11px] ${section.ok ? "text-emerald-700" : "text-amber-700"}`}>
+              {section.ok ? "ok" : "hold"}
+            </p>
+            <p className="mt-1 text-[11px] text-zinc-600">{section.detail}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function NextStepActions({
+  change,
+  onSyncRepoChange,
+  onOpenRepoChangePullRequest,
+  onOpenRepoChangeRevertPullRequest,
+  canPublish,
+}: {
+  change: any;
+  onSyncRepoChange: (formData: FormData) => Promise<void>;
+  onOpenRepoChangePullRequest: (formData: FormData) => Promise<void>;
+  onOpenRepoChangeRevertPullRequest: (formData: FormData) => Promise<void>;
+  canPublish: boolean;
+}) {
+  const code = String(change?.recommendedNextStep?.code || "");
+  const actionClass = "rounded border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50";
+
+  if (code === "open_pr" && !change?.prUrl) {
+    return (
+      <form action={onOpenRepoChangePullRequest} className="mt-2 inline-flex">
+        <input type="hidden" name="id" value={change.id} />
+        <button disabled={!canPublish} title={!canPublish ? "Requires publish_content capability" : undefined} className={actionClass}>
+          Create draft PR
+        </button>
+      </form>
+    );
+  }
+  if (["ready_for_review", "ready_auto_merge", "wait_ci", "wait_ci_start", "wait_auto_merge_labeling"].includes(code)) {
+    return (
+      <form action={onSyncRepoChange} className="mt-2 inline-flex">
+        <input type="hidden" name="id" value={change.id} />
+        <button disabled={!canPublish} title={!canPublish ? "Requires publish_content capability" : undefined} className={actionClass}>
+          Sync to advance
+        </button>
+      </form>
+    );
+  }
+  if (code === "review_revert_pr" || code === "revert_pr_open") {
+    if (change?.revertPrUrl) {
+      return (
+        <a className={`${actionClass} mt-2 inline-flex`} href={change.revertPrUrl}>
+          Review revert PR
+        </a>
+      );
+    }
+  }
+  if (code === "auto_revert_ready" && !change?.revertPrUrl) {
+    return (
+      <form action={onOpenRepoChangeRevertPullRequest} className="mt-2 inline-flex">
+        <input type="hidden" name="id" value={change.id} />
+        <button disabled={!canPublish} title={!canPublish ? "Requires publish_content capability" : undefined} className={actionClass}>
+          Create revert PR
+        </button>
+      </form>
+    );
+  }
+  if (["blocked_auto_merge_policy", "blocked_revert_policy"].includes(code)) {
+    return (
+      <a className={`${actionClass} mt-2 inline-flex`} href="#auto-action-policy">
+        Open policy
+      </a>
+    );
+  }
+  if (code === "investigate_ci" && change?.workflowRunUrl) {
+    return (
+      <a className={`${actionClass} mt-2 inline-flex`} href={change.workflowRunUrl}>
+        Investigate run
+      </a>
+    );
+  }
+  return null;
 }

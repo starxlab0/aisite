@@ -71,6 +71,8 @@ function buildCollectionPageDocument(record) {
       title: record.payload.hero.title,
       description: record.payload.hero.summary,
     },
+    schemaHints: record.payload.schemaHints ?? [],
+    structuredData: record.payload.structuredData ?? [],
     sourceDraftRef: record.contentRef,
     updatedAt: record.updatedAt,
   };
@@ -105,6 +107,8 @@ function buildGuideArticleDocument(record) {
       description: record.payload.excerpt,
       keywords: [slug, "guide-article"],
     },
+    schemaHints: record.payload.schemaHints ?? [],
+    structuredData: record.payload.structuredData ?? [],
     sourceDraftRef: record.contentRef,
     updatedAt: record.updatedAt,
   };
@@ -131,6 +135,8 @@ function buildFaqItemDocuments(record) {
     question: item.question,
     answer: item.answer,
     category: mapFaqCategory(item, record),
+    schemaHints: record.payload?.schemaHints ?? [],
+    structuredData: record.payload?.structuredData ?? [],
     sourceDraftRef: record.contentRef,
     targetType: record.targetType,
     targetId: record.targetId,

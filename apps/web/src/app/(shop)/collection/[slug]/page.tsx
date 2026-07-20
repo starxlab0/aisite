@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { resolveCollectionContent } from "@/lib/content/resolvers";
 import { resolvePreviewToken } from "@/lib/control-plane/ops";
+import { getRepoChangeSeoOverride } from "@/lib/seo/repo-change-overrides";
 import { buildAbsoluteUrl } from "@/lib/seo/url";
 import { SignalTracker } from "@/components/signals/signal-tracker";
 import { TrackedLink } from "@/components/signals/tracked-link";
@@ -14,15 +15,16 @@ type Props = {
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
   const content = await resolveCollectionContent(slug);
+  const override = getRepoChangeSeoOverride("collection", slug);
   return {
-    title: content.heroTitle,
-    description: content.heroSummary || `Collection ${slug} 页面。`,
+    title: override?.title || content.heroTitle,
+    description: override?.description || content.heroSummary || `Collection ${slug} 页面。`,
     alternates: {
-      canonical: `/collection/${slug}`,
+      canonical: override?.canonical || `/collection/${slug}`,
     },
     robots: {
-      index: true,
-      follow: true,
+      index: override?.robots?.index ?? true,
+      follow: override?.robots?.follow ?? true,
     },
   };
 }

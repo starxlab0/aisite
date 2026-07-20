@@ -25,7 +25,9 @@ export async function POST(req: Request) {
       targetId: body.targetId,
       contentRef: body.contentRef ?? null,
       eventType: body.eventType,
-      source: "web",
+      source: body.source ?? "web",
+      dedupeKey: body.dedupeKey ?? null,
+      metadata: body.metadata ?? null,
     }),
     cache: "no-store",
   });

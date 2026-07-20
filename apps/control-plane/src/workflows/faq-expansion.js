@@ -7,14 +7,17 @@ function findAsset(id) {
   return assets.find((asset) => asset.id === id);
 }
 
-function buildSuggestedQuestions(targetType, existingFaqs) {
+function buildSuggestedQuestions(targetType, existingFaqs, maxCount = 5) {
   const productQuestions = [
     "这款产品更适合哪类用户和使用场景？",
+    "哪些人可能不适合这款产品？",
     "使用前后分别应该怎么清洁和保存？",
     "噪音水平在真实居家场景下大概是什么感受？",
     "和 App 连接失败时应该先排查哪些问题？",
     "如果更在意隐私和收纳，购买前要注意什么？",
     "第一次使用建议从哪些模式和强度开始？",
+    "如果想提升情侣互动体验，应该优先看哪些点？",
+    "需要搭配润滑或其他配件吗？新手怎么选？",
   ];
 
   const collectionQuestions = [
@@ -23,10 +26,12 @@ function buildSuggestedQuestions(targetType, existingFaqs) {
     "预算有限时，优先看哪些参数最能避免买错？",
     "如果住合租环境，更适合哪类安静和隐私友好的产品？",
     "从这个集合里选到下单前，还应该补看哪类 guide？",
+    "这个集合更适合哪类人？不适合哪类人？",
+    "如果只想快速缩小到 1–2 个商品，最推荐的判断顺序是什么？",
   ];
 
   const pool = targetType === "product" ? productQuestions : collectionQuestions;
-  return pool.filter((question) => !existingFaqs.includes(question)).slice(0, 5);
+  return pool.filter((question) => !existingFaqs.includes(question)).slice(0, Math.max(3, Number(maxCount || 5)));
 }
 
 function findRelatedActionRun(targetType, targetId) {
@@ -37,7 +42,7 @@ function findRelatedActionRun(targetType, targetId) {
   );
 }
 
-function planFaqExpansion({ targetType, targetId }) {
+function planFaqExpansion({ targetType, targetId, recommendation } = {}) {
   const key = `${targetType}:${targetId}`;
   const target = faqTargets[key];
 
@@ -48,10 +53,8 @@ function planFaqExpansion({ targetType, targetId }) {
   const rule = findAsset("rule-product-faq-depth");
   const caseStudy = findAsset("case-faq-expansion");
   const relatedActionRun = findRelatedActionRun(targetType, targetId);
-  const suggestedQuestions = buildSuggestedQuestions(
-    target.targetType,
-    target.existingFaqs,
-  );
+  const wantsCluster = recommendation?.ruleId === "content-gap" || recommendation?.context?.gapType === "content_gap";
+  const suggestedQuestions = buildSuggestedQuestions(target.targetType, target.existingFaqs, wantsCluster ? 8 : 5);
 
   return {
     workflow: "faq-expansion",
@@ -152,8 +155,8 @@ function inferIntent(question) {
   return "selection";
 }
 
-function generateFaqDraft({ targetType, targetId }) {
-  const plan = planFaqExpansion({ targetType, targetId });
+function generateFaqDraft({ targetType, targetId, recommendation } = {}) {
+  const plan = planFaqExpansion({ targetType, targetId, recommendation });
   if (!plan) {
     return null;
   }
@@ -176,6 +179,29 @@ function generateFaqDraft({ targetType, targetId }) {
       recommendedFaqCount: plan.recommendedFaqCount,
     },
     draftItems,
+    schemaHints: ["FAQPage", "BreadcrumbList"],
+    structuredData: [
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        mainEntity: draftItems.map((item) => ({
+          "@type": "Question",
+          name: item.question,
+          acceptedAnswer: {
+            "@type": "Answer",
+            text: item.answer,
+          },
+        })),
+      },
+      {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "FAQ", item: "/faq" },
+          { "@type": "ListItem", position: 2, name: plan.target.title, item: plan.target.path },
+        ],
+      },
+    ],
     authoringNotes: [
       "回答应先给结论，再解释细节，最后给下一步阅读或购买建议。",
       "语气保持克制，不使用医疗、功效或绝对化承诺表达。",

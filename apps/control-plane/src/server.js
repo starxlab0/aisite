@@ -2,6 +2,7 @@ const http = require("http");
 const { siteProfile, assets } = require("./data/bootstrap-knowledge");
 const { actionRuns } = require("./data/bootstrap-actions");
 const { adapterName, getDraftById, listDrafts } = require("./cms-adapters");
+const { startSeoSearchConsoleScheduler } = require("./ops/seo-search-console-sync");
 const { handleOpsRoute } = require("./ops/router");
 const { handleSignalsRoute } = require("./signals/router");
 const {
@@ -32,6 +33,8 @@ const {
   publishGuideArticleDraft,
   rollbackGuideArticle,
 } = require("./workflows/guide-article");
+
+startSeoSearchConsoleScheduler();
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");

@@ -1,4 +1,4 @@
-const { collectionTargets, faqTargets, productTargets } = require("../data/bootstrap-content");
+const { collectionTargets, faqTargets, guideTargets, productTargets } = require("../data/bootstrap-content");
 
 function listAllTargets() {
   const items = [];
@@ -29,6 +29,15 @@ function listAllTargets() {
       targetPath: t.targetPath,
       faqTargetType: t.targetType,
       faqTargetId: t.targetId,
+    });
+  });
+
+  Object.values(guideTargets).forEach((t) => {
+    items.push({
+      type: "guide",
+      id: t.targetId,
+      title: t.title,
+      targetPath: t.targetPath,
     });
   });
 
@@ -72,6 +81,17 @@ function findTarget(type, id) {
     };
   }
 
+  if (type === "guide") {
+    const t = guideTargets[`guide:${id}`];
+    if (!t) return null;
+    return {
+      type: "guide",
+      id: t.targetId,
+      title: t.title,
+      targetPath: t.targetPath,
+    };
+  }
+
   return null;
 }
 
@@ -79,4 +99,3 @@ module.exports = {
   listAllTargets,
   findTarget,
 };
-

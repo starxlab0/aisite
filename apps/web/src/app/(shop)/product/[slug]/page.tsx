@@ -5,6 +5,7 @@ import { toProductPageViewModel } from "@/lib/cms/mapping";
 import { resolveProductContent } from "@/lib/content/resolvers";
 import { getPublishedProductFaqDraftBySlug } from "@/lib/control-plane/drafts";
 import { resolvePreviewToken } from "@/lib/control-plane/ops";
+import { getRepoChangeSeoOverride } from "@/lib/seo/repo-change-overrides";
 import { buildAbsoluteUrl } from "@/lib/seo/url";
 import { getActiveSiteConfig } from "@/lib/site/config";
 import { formatMoney } from "@/lib/utils/money";
@@ -12,6 +13,10 @@ import { addToCartAction } from "@/features/cart/actions";
 import type { ProductContent } from "@/types/product";
 import { SignalTracker } from "@/components/signals/signal-tracker";
 import { TrackedSubmitButton } from "@/components/signals/tracked-submit-button";
+import { AiConciergeEntry } from "@/components/ai/ai-concierge-entry";
+import { AttributionCapture } from "@/components/signals/attribution-capture";
+
+export const dynamic = "force-dynamic";
 
 type Props = {
   params: Promise<{ slug: string }>;
@@ -23,9 +28,11 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   const commerce = await getProductBySlug(slug);
   const resolved = await resolveProductContent(slug);
   const canonicalPath = `/product/${slug}`;
+  const override = getRepoChangeSeoOverride("product", slug);
 
-  const title = resolved.content?.seo?.title || resolved.content?.title || commerce?.name || slug;
+  const title = override?.title || resolved.content?.seo?.title || resolved.content?.title || commerce?.name || slug;
   const description =
+    override?.description ||
     resolved.content?.seo?.description ||
     resolved.content?.shortDescription ||
     `${title} · 商品详情、适合人群与 FAQ。`;
@@ -34,11 +41,11 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
     title,
     description,
     alternates: {
-      canonical: canonicalPath,
+      canonical: override?.canonical || canonicalPath,
     },
     robots: {
-      index: true,
-      follow: true,
+      index: override?.robots?.index ?? true,
+      follow: override?.robots?.follow ?? true,
     },
   };
 }
@@ -93,6 +100,9 @@ export default async function ProductPage({ params, searchParams }: Props) {
   const faqDraft = await getPublishedProductFaqDraftBySlug(slug);
   const vm = toProductPageViewModel({ commerce, content: resolved.content });
   const contentRef = resolved.debug?.contentRef ?? resolved.debug?.draftRef ?? null;
+  const attributionSrc = typeof sp.src === "string" ? sp.src : null;
+  const attributionExp = typeof sp.exp === "string" ? sp.exp : null;
+  const attributionBucket = typeof sp.bucket === "string" ? sp.bucket : null;
   const site = getActiveSiteConfig();
   const productJsonLd = {
     "@context": "https://schema.org",
@@ -119,7 +129,23 @@ export default async function ProductPage({ params, searchParams }: Props) {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(productJsonLd) }}
       />
-      <SignalTracker targetType="product" targetId={slug} contentRef={contentRef} />
+      {attributionSrc === "ai_concierge" ? (
+        <AttributionCapture
+          context={{
+            src: "ai_concierge",
+            experiment: attributionExp ?? undefined,
+            bucket: attributionBucket ?? undefined,
+            placement: "product",
+            sourceProductSlug: slug,
+          }}
+        />
+      ) : null}
+      <SignalTracker
+        targetType="product"
+        targetId={slug}
+        contentRef={contentRef}
+        metadata={attributionSrc ? { stage: "product_view", src: attributionSrc, exp: attributionExp, bucket: attributionBucket } : { stage: "product_view" }}
+      />
       {previewBadge ? (
         <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           {previewBadge}: 当前页面正在渲染未发布内容（仅用于预览）。
@@ -179,6 +205,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
         </div>
 
         <div className="space-y-5">
+          <AiConciergeEntry placement="product" productSlug={slug} />
           <div className="rounded-2xl border border-zinc-200 bg-white p-6">
             <p className="text-sm text-zinc-500">Price / Stock (Medusa)</p>
             <p className="mt-2 text-2xl font-semibold text-zinc-900">
@@ -202,6 +229,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
                 targetId={slug}
                 contentRef={contentRef}
                 eventType="add_to_cart"
+                metadata={attributionSrc ? { stage: "add_to_cart", src: attributionSrc, exp: attributionExp, bucket: attributionBucket } : { stage: "add_to_cart" }}
                 className="inline-flex h-11 w-full items-center justify-center rounded-md bg-zinc-900 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
                 disabled={!commerce.defaultVariantId}
                 type="submit"
