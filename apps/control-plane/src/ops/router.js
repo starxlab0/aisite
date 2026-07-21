@@ -1,4 +1,4 @@
-const { getOpsAuthContext, listCapabilitiesForRole, requireOpsCapability } = require("./auth");
+const { getOpsAuthContext, listCapabilitiesForRole, requireOpsAdmin, requireOpsCapability } = require("./auth");
 const { getAutoActionPolicy, updateAutoActionPolicy } = require("./auto-action-policy");
 const { createRepoChangePullRequest, createRepoChangeRevertPullRequest, syncActiveRepoChangesFromGitHub, syncRepoChangeFromGitHub } = require("./github");
 const { readJsonBody, sendJson } = require("./json");
@@ -19,6 +19,7 @@ const {
   createPreviewToken,
   createEvent,
   createRepoChange,
+  deleteEventsByIds,
   listPlaybooks,
   getPlaybook,
   applyPlaybook,
@@ -36,7 +37,7 @@ const {
 function actorFromReq(req) {
   const auth = getOpsAuthContext(req);
   if (!auth.ok || !auth.token) return "anonymous";
-  return `${auth.role}:token:${String(auth.token).slice(0, 4)}…`;
+  return `${auth.role}:token:${String(auth.token).slice(0, 4)}â€¦`;
 }
 
 function okEnvelope(data, extra = {}) {
@@ -115,7 +116,7 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
         note ? `note=${note}` : null,
       ]
         .filter(Boolean)
-        .join(" · "),
+        .join(" Â· "),
     });
     sendJson(res, 200, okEnvelope({ event }, { cmsAdapter }));
     return true;
@@ -222,7 +223,7 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
       actor,
       action: "playbook_application_transition",
       target: result.application.targetType && result.application.targetId ? { type: result.application.targetType, id: result.application.targetId } : undefined,
-      note: `playbook application ${applicationId} -> ${nextStatus}${note ? ` · ${note}` : ""}`,
+      note: `playbook application ${applicationId} -> ${nextStatus}${note ? ` Â· ${note}` : ""}`,
     });
     sendJson(res, 200, okEnvelope(result, { cmsAdapter }));
     return true;
@@ -279,7 +280,7 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
       actor,
       action: "repo_change_transition",
       target: updated.targetType && updated.targetId ? { type: updated.targetType, id: updated.targetId } : undefined,
-      note: `repo change ${id} -> ${nextStatus}${note ? ` · ${note}` : ""}`,
+      note: `repo change ${id} -> ${nextStatus}${note ? ` Â· ${note}` : ""}`,
     });
     sendJson(res, 200, okEnvelope({ repoChange: updated }, { cmsAdapter }));
     return true;
@@ -414,7 +415,7 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
       },
       prDraft: {
         title: `chore(seo): register ${targetType}:${targetId}`,
-        checklist: ["确认 targetPath 与站点路由一致", "补齐必要字段（标题/摘要/模块）", "导入后检查 SEO freshness 与 top issues"],
+        checklist: ["ç¡®è®¤ targetPath ä¸Žç«™ç‚¹è·¯ç”±ä¸€è‡´", "è¡¥é½å¿…è¦å­—æ®µï¼ˆæ ‡é¢˜/æ‘˜è¦/æ¨¡å—ï¼‰", "å¯¼å…¥åŽæ£€æŸ¥ SEO freshness ä¸Ž top issues"],
       },
     });
 
@@ -748,7 +749,7 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
   }
 
   if (url.pathname === "/ops/events" && req.method === "GET") {
-    // NOTE: 事件数据目前不分页，MVP 用于调试与审计界面。
+    // NOTE: äº‹ä»¶æ•°æ®ç›®å‰ä¸åˆ†é¡µï¼ŒMVP ç”¨äºŽè°ƒè¯•ä¸Žå®¡è®¡ç•Œé¢ã€‚
     const category = url.searchParams.get("category") || undefined;
     const targetType = url.searchParams.get("targetType") || undefined;
     const targetId = url.searchParams.get("targetId") || undefined;
@@ -762,6 +763,36 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
     const filtered = listEvents({ category, targetType, targetId, action, actionPrefix, actor, q });
     const items = filtered.slice(offset, offset + limit);
     sendJson(res, 200, okEnvelope({ items, total: filtered.length, limit, offset }, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname === "/ops/events/delete" && req.method === "POST") {
+    const auth = requireOpsAdmin(req);
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+
+    const body = (await readJsonBody(req)) ?? {};
+    const ids = Array.isArray(body.ids) ? body.ids : [];
+    if (!ids.length) {
+      sendJson(res, 400, errorEnvelope("Event delete requires at least one id.", { cmsAdapter }));
+      return true;
+    }
+
+    const result = deleteEventsByIds(ids);
+    sendJson(
+      res,
+      200,
+      okEnvelope(
+        {
+          deleted: result.deleted,
+          deletedCount: result.deleted.length,
+          total: result.total,
+        },
+        { cmsAdapter },
+      ),
+    );
     return true;
   }
 
@@ -977,7 +1008,7 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
       actor,
       action: "support_case_assign",
       target: updated.target ?? undefined,
-      note: `support case ${id} assigned to ${owner || "unassigned"}${note ? ` · ${note}` : ""}`,
+      note: `support case ${id} assigned to ${owner || "unassigned"}${note ? ` Â· ${note}` : ""}`,
     });
     sendJson(res, 200, okEnvelope({ supportCase: updated }, { cmsAdapter }));
     return true;
@@ -1002,7 +1033,7 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
       actor,
       action: "support_case_ack",
       target: updated.target ?? undefined,
-      note: `support case ${id} acked${note ? ` · ${note}` : ""}`,
+      note: `support case ${id} acked${note ? ` Â· ${note}` : ""}`,
     });
     sendJson(res, 200, okEnvelope({ supportCase: updated }, { cmsAdapter }));
     return true;
@@ -1027,7 +1058,7 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
       actor,
       action: "support_case_resolved",
       target: updated.target ?? undefined,
-      note: `support case ${id} resolved${note ? ` · ${note}` : ""}`,
+      note: `support case ${id} resolved${note ? ` Â· ${note}` : ""}`,
     });
     sendJson(res, 200, okEnvelope({ supportCase: updated }, { cmsAdapter }));
     return true;
@@ -1051,7 +1082,7 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
     createEvent({
       actor,
       action: "customer_notify_ack",
-      note: `customer notification ${id} acked${note ? ` · ${note}` : ""}`,
+      note: `customer notification ${id} acked${note ? ` Â· ${note}` : ""}`,
     });
     sendJson(res, 200, okEnvelope({ notification: updated }, { cmsAdapter }));
     return true;
@@ -1092,7 +1123,7 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
     createEvent({
       actor,
       action: "alert_ack",
-      note: `alert ${id} acked${note ? ` · ${note}` : ""}`,
+      note: `alert ${id} acked${note ? ` Â· ${note}` : ""}`,
     });
     sendJson(res, 200, okEnvelope({ alert: updated }, { cmsAdapter }));
     return true;
