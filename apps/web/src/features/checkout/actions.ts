@@ -79,6 +79,33 @@ function normalizeCurrency(code: string) {
   return String(code || "usd").toLowerCase();
 }
 
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  "bif",
+  "clp",
+  "djf",
+  "gnf",
+  "jpy",
+  "kmf",
+  "krw",
+  "mga",
+  "pyg",
+  "rwf",
+  "ugx",
+  "vnd",
+  "vuv",
+  "xaf",
+  "xof",
+  "xpf",
+]);
+
+function toStripeUnitAmount(amount: number, currency: string) {
+  const normalizedAmount = Number.isFinite(amount) ? amount : 0;
+  if (ZERO_DECIMAL_CURRENCIES.has(currency)) {
+    return Math.max(0, Math.round(normalizedAmount));
+  }
+  return Math.max(0, Math.round(normalizedAmount * 100));
+}
+
 export async function startStripeCheckoutAction(formData: FormData) {
   if (!envServer.stripeSecretKey) {
     throw new Error("Stripe is not configured (missing STRIPE_SECRET_KEY)");
@@ -154,7 +181,7 @@ export async function startStripeCheckoutAction(formData: FormData) {
       quantity: item.quantity,
       price_data: {
         currency,
-        unit_amount: Math.max(0, Math.round(item.unitPrice)),
+        unit_amount: toStripeUnitAmount(item.unitPrice, currency),
         product_data: {
           name: item.title ?? item.productHandle ?? item.productId ?? "Item",
           metadata: {
@@ -207,7 +234,7 @@ export async function resumeStripeCheckoutAction(formData: FormData) {
       quantity: item.quantity,
       price_data: {
         currency,
-        unit_amount: Math.max(0, Math.round(item.unitPrice)),
+        unit_amount: toStripeUnitAmount(item.unitPrice, currency),
         product_data: {
           name: item.title ?? item.productHandle ?? item.productId ?? "Item",
         },
