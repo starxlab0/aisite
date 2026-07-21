@@ -24,4 +24,7 @@ export type Order = {
   recoveryLane?: "awaiting_result" | "customer_retry" | "customer_action" | "provider_review" | "fulfillment_ready";
   recoveryOwner?: "system" | "customer" | "ops";
   recoveryActions?: string[];
+  paymentProvider?: "stripe" | "medusa" | "system_default" | null;
+  paymentSessionId?: string | null;
+  paymentUrl?: string | null;
 };

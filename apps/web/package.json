@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node ./node_modules/next/dist/bin/next dev",
     "build:installed": "node ./node_modules/next/dist/bin/next build",
-    "build": "npm ci --include=dev --no-audit --no-fund && npm run build:installed",
+    "build": "npm install --include=dev --no-audit --no-fund && npm run build:installed",
     "start": "node ./node_modules/next/dist/bin/next start",
     "lint": "node ./node_modules/eslint/bin/eslint.js"
   },
@@ -16,6 +16,7 @@
     "next": "16.2.9",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "stripe": "^18.3.0",
     "tailwindcss": "^4"
   },
   "devDependencies": {
