@@ -31,6 +31,24 @@ type MedusaCompleteCartResponse =
       data?: { id?: string } | null;
     };
 
+type MedusaPaymentCollectionResponse = {
+  payment_collection?: {
+    id?: string;
+    payment_sessions?: Array<{
+      id?: string;
+      provider_id?: string;
+      status?: string;
+    }>;
+  } | null;
+};
+
+type MedusaPaymentProvidersResponse = {
+  payment_providers?: Array<{
+    id: string;
+    is_enabled?: boolean;
+  }>;
+};
+
 async function ensureMedusaEnabled() {
   if (getCommerceMode() === "mock") return;
   const baseUrl = getMedusaBaseUrl();
@@ -96,15 +114,37 @@ export async function placeOrder(input?: Partial<PlaceOrderInput>): Promise<Orde
     // non-blocking (some setups allow cart completion without explicit shipping method)
   }
 
-  // 3) create payment sessions (system default provider is seeded)
-  try {
-    await medusaFetch(`/store/carts/${encodeURIComponent(cartId)}/payment-sessions`, {
+  // 3) create payment collection + initialize payment session
+  const paymentProviders = await medusaFetch<MedusaPaymentProvidersResponse>(
+    `/store/payment-providers?region_id=${encodeURIComponent(String(process.env.NEXT_PUBLIC_MEDUSA_REGION_ID ?? ""))}`,
+  );
+  const providerId =
+    paymentProviders.payment_providers?.find((item) => item.is_enabled !== false)?.id ??
+    "pp_system_default";
+
+  const paymentCollection = await medusaFetch<MedusaPaymentCollectionResponse>(
+    "/store/payment-collections",
+    {
       method: "POST",
-      body: JSON.stringify({}),
-    });
-  } catch {
-    // non-blocking (some setups create payment sessions implicitly)
+      body: JSON.stringify({
+        cart_id: cartId,
+      }),
+    },
+  );
+  const paymentCollectionId = paymentCollection.payment_collection?.id;
+  if (!paymentCollectionId) {
+    throw new Error("Failed to create payment collection for cart");
   }
+
+  await medusaFetch<MedusaPaymentCollectionResponse>(
+    `/store/payment-collections/${encodeURIComponent(paymentCollectionId)}/payment-sessions`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        provider_id: providerId,
+      }),
+    },
+  );
 
   // 4) complete cart -> order
   const completed = (await medusaFetch<MedusaCompleteCartResponse>(
