@@ -75,6 +75,21 @@ apps/web
 - ECS / 自有服务器
 - 容器平台
 
+### Railway（当前推荐）
+
+本仓库已经补充了 Medusa backend 的 Railway 配置，建议直接把 Railway 服务的 **Root Directory** 指向：
+
+```txt
+apps/medusa/apps/backend
+```
+
+然后使用该目录下的：
+
+- `railway.json`
+- `RAILWAY_DEPLOY.md`
+
+这样可以避免根目录现有的 `railway.json`（当前主要服务于 `control-plane`）误用于 Medusa backend。
+
 ### Medusa 至少需要
 
 - PostgreSQL
