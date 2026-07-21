@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "fs/promises";
 import type { Order } from "@/types/order";
 
-const SNAPSHOT_DIR = process.env.ORDER_SNAPSHOT_STORE_DIR || "/data/user/work";
+const SNAPSHOT_DIR = process.env.ORDER_SNAPSHOT_STORE_DIR || process.env.TMPDIR || "/tmp";
 const SNAPSHOT_FILE = `${SNAPSHOT_DIR.replace(/\/$/, "")}/web-order-snapshots.json`;
 const MAX_ORDERS = 100;
 
@@ -72,12 +72,21 @@ async function writeStore(next: OrderSnapshotMap) {
 }
 
 export async function upsertOrderSnapshot(order: Order) {
-  const current = await readStore();
-  current[order.id] = mergeOrderSnapshot(current[order.id], order);
-  await writeStore(current);
+  try {
+    const current = await readStore();
+    current[order.id] = mergeOrderSnapshot(current[order.id], order);
+    await writeStore(current);
+  } catch (error) {
+    console.error("Failed to persist order snapshot", error);
+  }
 }
 
 export async function getStoredOrderSnapshotById(id: string): Promise<Order | null> {
-  const current = await readStore();
-  return current[id] ?? null;
+  try {
+    const current = await readStore();
+    return current[id] ?? null;
+  } catch (error) {
+    console.error("Failed to read stored order snapshot", error);
+    return null;
+  }
 }
