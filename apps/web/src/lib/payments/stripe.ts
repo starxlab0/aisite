@@ -19,9 +19,12 @@ export function getStripeClient() {
 export function resolveBaseUrl() {
   const url =
     process.env.NEXT_PUBLIC_SITE_URL ||
+    process.env.VERCEL_PROJECT_PRODUCTION_URL ||
+    process.env.VERCEL_URL ||
     (process.env.NODE_ENV !== "production" ? "http://localhost:3000" : "");
   if (!url) {
     throw new Error("NEXT_PUBLIC_SITE_URL is not configured");
   }
-  return url.replace(/\/$/, "");
+  const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+  return normalized.replace(/\/$/, "");
 }
