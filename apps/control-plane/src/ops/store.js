@@ -404,6 +404,36 @@ function createEvent(event) {
   return record;
 }
 
+function deleteEventsByIds(ids = []) {
+  const targetIds = new Set(
+    (Array.isArray(ids) ? ids : [])
+      .map((id) => String(id || "").trim())
+      .filter(Boolean),
+  );
+  if (!targetIds.size) {
+    return { deleted: [], total: opsEvents.length };
+  }
+
+  const deleted = [];
+  const kept = [];
+
+  for (const event of opsEvents) {
+    if (targetIds.has(String(event?.id || ""))) {
+      deleted.push(event);
+      continue;
+    }
+    kept.push(event);
+  }
+
+  if (!deleted.length) {
+    return { deleted: [], total: opsEvents.length };
+  }
+
+  opsEvents.splice(0, opsEvents.length, ...kept);
+  persist();
+  return { deleted, total: opsEvents.length };
+}
+
 function eventMatchesCategory(event, category) {
   if (!category) return true;
   const action = String(event?.action || "");
@@ -750,7 +780,7 @@ async function notifyCustomer(notification, { actor = "system", force = false } 
       actor,
       action: "customer_notify_failed",
       target: notification.target ?? undefined,
-      note: `customer notification ${notification.id} notify ${notification.notify.status}${notification.notify.lastError ? ` · ${notification.notify.lastError}` : ""}`,
+      note: `customer notification ${notification.id} notify ${notification.notify.status}${notification.notify.lastError ? ` Â· ${notification.notify.lastError}` : ""}`,
     });
   } catch {
     // non-blocking
@@ -1199,7 +1229,7 @@ async function notifyAlert(alert, { actor = "system", force = false } = {}) {
       actor,
       action: "alert_notify_failed",
       target: alert.target ?? undefined,
-      note: `alert ${alert.id} notify ${alert.notify.status}${alert.notify.lastError ? ` · ${alert.notify.lastError}` : ""}`,
+      note: `alert ${alert.id} notify ${alert.notify.status}${alert.notify.lastError ? ` Â· ${alert.notify.lastError}` : ""}`,
     });
   } catch {
     // non-blocking
@@ -1755,6 +1785,7 @@ const {
 
 module.exports = {
   createEvent,
+  deleteEventsByIds,
   listEvents,
   listPlaybooks,
   getPlaybook,
@@ -1800,7 +1831,7 @@ module.exports = {
   resultGovernanceOpsContract,
   updateRepoChange,
   transitionRepoChange,
-  // 兼容层：新代码应优先通过 `seoOps` facade 调用 SEO 相关能力。
+  // å…¼å®¹å±‚ï¼šæ–°ä»£ç åº”ä¼˜å…ˆé€šè¿‡ `seoOps` facade è°ƒç”¨ SEO ç›¸å…³èƒ½åŠ›ã€‚
   ingestSeoMetrics,
   importSeoMetricsFromSearchConsole,
   replayLatestSeoImport,
@@ -1810,13 +1841,13 @@ module.exports = {
   getSeoImportDiagnostics,
   getSeoGeoRecommendationSummary,
   getSeoMonitoringSnapshot,
-  // 兼容层：新代码应优先通过 `commerceOps` facade 调用 commerce 相关能力。
+  // å…¼å®¹å±‚ï¼šæ–°ä»£ç åº”ä¼˜å…ˆé€šè¿‡ `commerceOps` facade è°ƒç”¨ commerce ç›¸å…³èƒ½åŠ›ã€‚
   summarizeCommerceCheckout,
   getPurchaseMonitoringSnapshot,
   getCommerceCheckoutSnapshot,
   getCommerceProposalSnapshot,
   getCommerceMonitoringSnapshot,
-  // 兼容层：新代码应优先通过 `resultGovernanceOps` facade 调用 result governance 相关能力。
+  // å…¼å®¹å±‚ï¼šæ–°ä»£ç åº”ä¼˜å…ˆé€šè¿‡ `resultGovernanceOps` facade è°ƒç”¨ result governance ç›¸å…³èƒ½åŠ›ã€‚
   summarizePaymentResults,
   summarizeFulfillmentResults,
   summarizeRefundResults,
