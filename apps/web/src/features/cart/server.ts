@@ -5,7 +5,9 @@ import {
   createEmptyCart,
   isMedusaEnabled,
   MOCK_CART_ID,
+  removeLineItem,
   retrieveCart,
+  updateLineItem,
 } from "@/lib/commerce/cart";
 import { getProductBySlug } from "@/lib/commerce/products";
 import type { Cart } from "@/types/cart";
@@ -19,6 +21,11 @@ type MockAddItemInput = {
   quantity: number;
 };
 
+type MockUpdateItemInput = {
+  lineItemId: string;
+  quantity: number;
+};
+
 function parseMockCart(raw: string | undefined): Cart {
   if (!raw) return createEmptyCart();
   try {
@@ -26,6 +33,22 @@ function parseMockCart(raw: string | undefined): Cart {
   } catch {
     return createEmptyCart();
   }
+}
+
+async function persistMockCart(cart: Cart) {
+  const cookieStore = await cookies();
+  cookieStore.set(MOCK_CART_COOKIE_NAME, JSON.stringify(cart), {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+  });
+  return cart;
+}
+
+function recalculateMockCart(cart: Cart) {
+  cart.subtotal = cart.items.reduce((sum, item) => sum + item.total, 0);
+  cart.total = cart.subtotal + cart.shippingTotal + cart.taxTotal - cart.discountTotal;
+  return cart;
 }
 
 export async function getCurrentCart(): Promise<Cart> {
@@ -101,17 +124,10 @@ export async function addItemToMockCart(input: MockAddItemInput): Promise<Cart> 
     });
   }
 
-  next.subtotal = next.items.reduce((sum, item) => sum + item.total, 0);
-  next.total = next.subtotal + next.shippingTotal + next.taxTotal - next.discountTotal;
+  recalculateMockCart(next);
   next.currency = product.currency;
 
-  cookieStore.set(MOCK_CART_COOKIE_NAME, JSON.stringify(next), {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-  });
-
-  return next;
+  return persistMockCart(next);
 }
 
 export async function addItemToCurrentCart(input: {
@@ -134,3 +150,70 @@ export async function addItemToCurrentCart(input: {
   });
 }
 
+export async function updateItemInMockCart(input: MockUpdateItemInput): Promise<Cart> {
+  const cookieStore = await cookies();
+  const current = parseMockCart(cookieStore.get(MOCK_CART_COOKIE_NAME)?.value);
+  const next = structuredClone(current);
+  next.items = next.items
+    .map((item) =>
+      item.id === input.lineItemId
+        ? {
+            ...item,
+            quantity: input.quantity,
+            total: item.unitPrice * input.quantity,
+          }
+        : item,
+    )
+    .filter((item) => item.quantity > 0);
+  recalculateMockCart(next);
+  return persistMockCart(next);
+}
+
+export async function removeItemFromMockCart(lineItemId: string): Promise<Cart> {
+  const cookieStore = await cookies();
+  const current = parseMockCart(cookieStore.get(MOCK_CART_COOKIE_NAME)?.value);
+  const next = structuredClone(current);
+  next.items = next.items.filter((item) => item.id !== lineItemId);
+  recalculateMockCart(next);
+  return persistMockCart(next);
+}
+
+export async function updateItemInCurrentCart(input: {
+  lineItemId: string;
+  quantity: number;
+}): Promise<Cart> {
+  if (!isMedusaEnabled()) {
+    return updateItemInMockCart(input);
+  }
+
+  const cart = await getOrCreateCurrentCart();
+  if (input.quantity <= 0) {
+    return removeLineItem(cart.id, input.lineItemId);
+  }
+  return updateLineItem(cart.id, {
+    lineItemId: input.lineItemId,
+    quantity: input.quantity,
+  });
+}
+
+export async function removeItemFromCurrentCart(lineItemId: string): Promise<Cart> {
+  if (!isMedusaEnabled()) {
+    return removeItemFromMockCart(lineItemId);
+  }
+
+  const cart = await getOrCreateCurrentCart();
+  return removeLineItem(cart.id, lineItemId);
+}
+
+export async function clearCurrentCart() {
+  const cookieStore = await cookies();
+  if (!isMedusaEnabled()) {
+    cookieStore.set(MOCK_CART_COOKIE_NAME, JSON.stringify(createEmptyCart()), {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+    });
+    return;
+  }
+  cookieStore.delete(CART_COOKIE_NAME);
+}
