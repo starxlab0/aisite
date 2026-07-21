@@ -8,4 +8,6 @@ export const envServer = {
   resendApiKey: process.env.RESEND_API_KEY,
   klaviyoApiKey: process.env.KLAVIYO_API_KEY,
   posthogSecret: process.env.POSTHOG_SECRET,
+  stripeSecretKey: process.env.STRIPE_SECRET_KEY,
+  stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
 };
