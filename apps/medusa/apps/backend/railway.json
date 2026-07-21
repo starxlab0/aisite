@@ -4,7 +4,7 @@
     "builder": "nixpacks",
     "buildCommand": "npm install --no-audit --no-fund && npm run build",
     "watchPatterns": [
-      "/apps/medusa/apps/backend/**"
+      "apps/medusa/apps/backend/**"
     ]
   },
   "deploy": {
