@@ -36,6 +36,11 @@ export type AddLineItemInput = {
   quantity?: number;
 };
 
+export type UpdateLineItemInput = {
+  lineItemId: string;
+  quantity: number;
+};
+
 function toCart(response: MedusaCartResponse): Cart {
   const cart = response.cart;
   return {
@@ -84,7 +89,8 @@ export async function createCart(input: CreateCartInput = {}): Promise<Cart> {
 
   const payload: Record<string, string> = {};
   if (input.regionId) payload.region_id = input.regionId;
-  if (input.countryCode) payload.country_code = input.countryCode;
+  // Medusa store cart 创建接口不接受 country_code。
+  // 国家/地址信息应在后续 checkout 更新 cart 地址时再写入。
 
   const response = await medusaFetch<MedusaCartResponse>("/store/carts", {
     method: "POST",
@@ -118,6 +124,32 @@ export async function addLineItem(
         variant_id: input.variantId,
         quantity: input.quantity ?? 1,
       }),
+    },
+  );
+  return toCart(response);
+}
+
+export async function updateLineItem(
+  cartId: string,
+  input: UpdateLineItemInput,
+): Promise<Cart> {
+  const response = await medusaFetch<MedusaCartResponse>(
+    `/store/carts/${cartId}/line-items/${input.lineItemId}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        quantity: input.quantity,
+      }),
+    },
+  );
+  return toCart(response);
+}
+
+export async function removeLineItem(cartId: string, lineItemId: string): Promise<Cart> {
+  const response = await medusaFetch<MedusaCartResponse>(
+    `/store/carts/${cartId}/line-items/${lineItemId}`,
+    {
+      method: "DELETE",
     },
   );
   return toCart(response);
