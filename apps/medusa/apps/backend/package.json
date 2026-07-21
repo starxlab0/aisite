@@ -13,7 +13,7 @@
     "medusa"
   ],
   "scripts": {
-    "build": "medusa build",
+    "build": "medusa build && mkdir -p public/admin && cp -R .medusa/server/public/admin/. public/admin/",
     "start": "medusa start",
     "dev": "medusa develop",
     "lint": "medusa lint",
