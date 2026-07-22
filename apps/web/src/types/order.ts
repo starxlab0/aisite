@@ -16,6 +16,7 @@ export type Order = {
   fulfillmentStatus: "unfulfilled" | "processing" | "shipped" | "delivered";
   total: number;
   currency: string;
+  amountUnit?: "major" | "minor";
   createdAt: string;
   updatedAt?: string;
   statusSource?: "checkout" | "medusa_admin" | "medusa_webhook" | "payment_webhook" | "server_snapshot" | "browser_snapshot";

@@ -252,6 +252,7 @@ function mapMedusaOrder(order: MedusaAdminOrder): Order {
     fulfillmentStatus: normalizeFulfillmentStatus(order.fulfillment_status),
     total: Number(order.total ?? 0) || 0,
     currency: String(order.currency_code ?? "USD").toUpperCase(),
+    amountUnit: "minor",
     createdAt: order.created_at ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     statusSource: "medusa_admin",
