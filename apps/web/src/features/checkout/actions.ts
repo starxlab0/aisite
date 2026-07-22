@@ -1,6 +1,5 @@
 "use server";
 
-import crypto from "crypto";
 import { redirect } from "next/navigation";
 import { clearCurrentCart, getOrCreateCurrentCart } from "@/features/cart/server";
 import { persistOrderSnapshot } from "@/features/checkout/session";
@@ -129,7 +128,17 @@ export async function startStripeCheckoutAction(formData: FormData) {
     throw new Error("Email is required");
   }
 
-  const orderId = `ord_${crypto.randomBytes(10).toString("hex")}`;
+  const order = await placeOrder({
+    cartId: cart.id,
+    email,
+    firstName: firstName || "Guest",
+    lastName: lastName || "Customer",
+    phone,
+    address1: address1 || "Local test address",
+    city: city || "Shanghai",
+    postalCode: postalCode || "200000",
+  });
+  const orderId = order.id;
   const now = new Date().toISOString();
   const currency = normalizeCurrency(cart.currency);
 
@@ -139,6 +148,7 @@ export async function startStripeCheckoutAction(formData: FormData) {
     cart,
   });
 
+  // 先落一份“待支付订单快照”，支付结果由 Stripe webhook 回写
   const pendingOrder = {
     id: orderId,
     email,
@@ -193,10 +203,13 @@ export async function startStripeCheckoutAction(formData: FormData) {
         },
       },
     })),
+    // 在 checkout 表单里已经收集了地址，但也可以选择让 Stripe 再收集一次（可选）
+    // shipping_address_collection: { allowed_countries: ["CN"] },
   });
 
   await upsertOrderSnapshot({
     ...pendingOrder,
+    // 注意：当前 Order snapshot 类型是最小结构（不含地址/收货人），收货信息保存在 checkout session cookie 里。
     paymentSessionId: session.id,
     paymentUrl: session.url ?? null,
     updatedAt: new Date().toISOString(),
@@ -246,6 +259,7 @@ export async function resumeStripeCheckoutAction(formData: FormData) {
 
   if (!session.url) throw new Error("Stripe checkout session has no url");
 
+  // 这里只做最小回写：记录 session id，支付结果仍由 webhook 覆盖
   await upsertOrderSnapshot({
     id: orderId,
     email: "",

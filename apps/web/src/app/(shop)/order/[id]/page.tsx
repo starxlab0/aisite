@@ -123,6 +123,30 @@ function sourceLabel(liveOrder: Order | null, storedOrder: Order | null) {
   return "本地下单快照";
 }
 
+function mergeLiveOrderWithSnapshot(liveOrder: Order | null, storedOrder: Order | null) {
+  if (!liveOrder) return storedOrder;
+  if (!storedOrder) return liveOrder;
+  if (storedOrder.paymentStatus === "pending" || liveOrder.paymentStatus === storedOrder.paymentStatus) {
+    return liveOrder;
+  }
+  return applyOrderStatusOverlay(
+    {
+      ...liveOrder,
+      paymentProvider: storedOrder.paymentProvider ?? liveOrder.paymentProvider,
+      paymentSessionId: storedOrder.paymentSessionId ?? liveOrder.paymentSessionId,
+      paymentUrl: storedOrder.paymentUrl ?? liveOrder.paymentUrl,
+    },
+    {
+      paymentStatus: storedOrder.paymentStatus,
+      paymentDetail: storedOrder.paymentDetail,
+      paymentIssueReason: storedOrder.paymentIssueReason,
+      statusSource: storedOrder.statusSource ?? liveOrder.statusSource,
+      statusNote: storedOrder.statusNote ?? liveOrder.statusNote,
+      updatedAt: storedOrder.updatedAt ?? liveOrder.updatedAt,
+    },
+  );
+}
+
 function recoveryHeadline(order: Order) {
   if (order.recoveryLane === "customer_retry") return "建议重新发起支付";
   if (order.recoveryLane === "customer_action") return "需要用户完成额外支付动作";
@@ -150,15 +174,16 @@ export default async function OrderPage({ params, searchParams }: Props) {
   const sessionId = firstValue(sp.session_id);
 
   const liveOrder = await getOrderById(id);
-  const storedOrder = liveOrder ? null : await getStoredOrderSnapshotById(id);
-  const browserSnapshotOrder = liveOrder || storedOrder ? null : await getOrderSnapshotById(id);
+  const storedOrder = await getStoredOrderSnapshotById(id);
+  const mergedLiveOrder = mergeLiveOrderWithSnapshot(liveOrder, storedOrder);
+  const browserSnapshotOrder = mergedLiveOrder || storedOrder ? null : await getOrderSnapshotById(id);
   const resolvedFallbackOrder = await resolveStripeReturnOrder({
     orderId: id,
-    order: liveOrder ?? storedOrder ?? browserSnapshotOrder,
+    order: mergedLiveOrder ?? storedOrder ?? browserSnapshotOrder,
     stripeState,
     sessionId,
   });
-  const order = liveOrder ?? resolvedFallbackOrder;
+  const order = mergedLiveOrder ?? resolvedFallbackOrder;
 
   if (!order) {
     return (
@@ -177,7 +202,7 @@ export default async function OrderPage({ params, searchParams }: Props) {
         <PurchaseSignalTracker targets={purchaseTargets} dedupeKey={`order:${order.id}`} />
       ) : null}
       <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Order: {order.id}</h1>
-      {!liveOrder ? (
+      {!mergedLiveOrder ? (
         <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           当前展示的是{storedOrder ? "服务端订单快照" : "本地下单快照"}，不是实时订单查询结果。
           {!envServer.medusaApiKey ? " 若要读取 Medusa 实时订单状态，请配置 MEDUSA_API_KEY。" : null}
@@ -188,7 +213,7 @@ export default async function OrderPage({ params, searchParams }: Props) {
         <p className="font-medium">{paymentHeadline(order)}</p>
         <p className="mt-1">{paymentDescription(order)}</p>
         <p className="mt-2 text-xs opacity-80">
-          来源 {sourceLabel(liveOrder, storedOrder)} · 原始状态 {order.paymentStatus}
+          来源 {sourceLabel(mergedLiveOrder, storedOrder)} · 原始状态 {order.paymentStatus}
           {order.paymentDetail ? `/${order.paymentDetail}` : ""}
           {order.updatedAt ? ` · 最后同步 ${new Date(order.updatedAt).toLocaleString()}` : ""}
         </p>
