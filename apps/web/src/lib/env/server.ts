@@ -1,3 +1,5 @@
+import "server-only";
+
 export const envServer = {
   revalidateSecret: process.env.REVALIDATE_SECRET,
   sanityToken: process.env.SANITY_API_TOKEN,
