@@ -38,6 +38,7 @@ function mergeOrderSnapshot(existing: Order | undefined, incoming: Order): Order
     items: incoming.items.length ? incoming.items : existing?.items ?? [],
     total: incoming.total ?? existing?.total ?? 0,
     currency: incoming.currency ?? existing?.currency ?? "USD",
+    amountUnit: incoming.amountUnit ?? existing?.amountUnit ?? "major",
     createdAt: existing?.createdAt ?? incoming.createdAt,
     fulfillmentStatus,
     ...payment,

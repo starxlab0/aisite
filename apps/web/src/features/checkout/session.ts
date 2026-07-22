@@ -18,6 +18,7 @@ type OrderSnapshot = Pick<
   | "fulfillmentStatus"
   | "total"
   | "currency"
+  | "amountUnit"
   | "createdAt"
   | "updatedAt"
   | "statusSource"
@@ -65,6 +66,7 @@ export async function persistOrderSnapshot(input: {
     fulfillmentStatus: "unfulfilled",
     total: input.cart.total,
     currency: input.cart.currency,
+    amountUnit: "major",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     statusSource: "checkout",
