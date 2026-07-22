@@ -11,6 +11,9 @@ import { buildPurchaseTargetsFromOrder, isSuccessfulOrderPayment } from "@/lib/s
 import { formatMoney } from "@/lib/utils/money";
 import type { Order } from "@/types/order";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 type Props = {
   params: Promise<{ id: string }>;
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
