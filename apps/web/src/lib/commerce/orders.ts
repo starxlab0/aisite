@@ -1,36 +1,44 @@
-import { getMedusaBaseUrl } from "@/lib/commerce/http";
-import { envServer } from "@/lib/env/server";
+import { getMedusaBaseUrl, medusaFetch } from "@/lib/commerce/http";
 import type { Order } from "@/types/order";
 
-type MedusaAdminOrderItem = {
+type MedusaStoreOrderItem = {
+  id?: string | null;
   product_id?: string | null;
   title?: string | null;
   quantity?: number | null;
   unit_price?: number | null;
   thumbnail?: string | null;
+  product_handle?: string | null;
   variant?: {
     product?: {
+      id?: string | null;
       handle?: string | null;
     } | null;
   } | null;
   product?: {
+    id?: string | null;
     handle?: string | null;
   } | null;
 };
 
-type MedusaAdminOrder = {
+type MedusaStoreOrder = {
   id: string;
+  status?: string | null;
   email?: string | null;
-  payment_status?: string | null;
-  fulfillment_status?: string | null;
+  summary?: {
+    paid_total?: number | null;
+    transaction_total?: number | null;
+    pending_difference?: number | null;
+  } | null;
   total?: number | null;
   currency_code?: string | null;
   created_at?: string | null;
-  items?: MedusaAdminOrderItem[] | null;
+  updated_at?: string | null;
+  items?: MedusaStoreOrderItem[] | null;
 };
 
-type MedusaAdminOrderResponse = {
-  order?: MedusaAdminOrder | null;
+type MedusaStoreOrderResponse = {
+  order?: MedusaStoreOrder | null;
 };
 
 export function normalizePaymentStatus(value: string | null | undefined): Order["paymentStatus"] {
@@ -226,9 +234,15 @@ export function applyOrderStatusOverlay(
   };
 }
 
-function mapMedusaOrder(order: MedusaAdminOrder): Order {
-  const paymentStatus = normalizePaymentStatus(order.payment_status);
-  const paymentDetail = normalizePaymentDetail(order.payment_status);
+function mapMedusaOrder(order: MedusaStoreOrder): Order {
+  const paidTotal = Number(order.summary?.paid_total ?? 0) || 0;
+  const transactionTotal = Number(order.summary?.transaction_total ?? 0) || 0;
+  const pendingDifference = Number(order.summary?.pending_difference ?? 0) || 0;
+  const isPaid = paidTotal > 0 || (Number(order.total ?? 0) > 0 && pendingDifference <= 0);
+  const isAuthorized = !isPaid && transactionTotal > 0;
+  const rawPaymentStatus = isPaid ? "paid" : isAuthorized ? "authorized" : order.status;
+  const paymentStatus = normalizePaymentStatus(rawPaymentStatus);
+  const paymentDetail = normalizePaymentDetail(rawPaymentStatus);
   const paymentIssueReason = derivePaymentIssueReason({ paymentStatus, paymentDetail });
   const recovery = derivePaymentRecoveryPlan({ paymentStatus, paymentDetail, paymentIssueReason });
   return {
@@ -236,26 +250,25 @@ function mapMedusaOrder(order: MedusaAdminOrder): Order {
     email: order.email ?? "",
     items: Array.isArray(order.items)
       ? order.items
-          .filter((item) => item?.product_id)
           .map((item) => ({
-            productId: String(item.product_id),
+            productId: String(item.product_id ?? item.product?.id ?? item.variant?.product?.id ?? item.id ?? "unknown"),
             title: item.title ?? "Product",
             quantity: Number(item.quantity ?? 0) || 0,
             unitPrice: Number(item.unit_price ?? 0) || 0,
             thumbnail: item.thumbnail ?? undefined,
-            productHandle: item.product?.handle ?? item.variant?.product?.handle ?? undefined,
+            productHandle: item.product_handle ?? item.product?.handle ?? item.variant?.product?.handle ?? undefined,
           }))
       : [],
     paymentStatus,
     paymentDetail,
     paymentIssueReason,
-    fulfillmentStatus: normalizeFulfillmentStatus(order.fulfillment_status),
+    fulfillmentStatus: "unfulfilled",
     total: Number(order.total ?? 0) || 0,
     currency: String(order.currency_code ?? "USD").toUpperCase(),
     amountUnit: "minor",
     createdAt: order.created_at ?? new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    statusSource: "medusa_admin",
+    updatedAt: order.updated_at ?? new Date().toISOString(),
+    statusSource: "medusa_store",
     statusNote: null,
     recoveryLane: recovery.recoveryLane,
     recoveryOwner: recovery.recoveryOwner,
@@ -265,19 +278,13 @@ function mapMedusaOrder(order: MedusaAdminOrder): Order {
 
 export async function getOrderById(id: string): Promise<Order | null> {
   const baseUrl = getMedusaBaseUrl();
-  if (!baseUrl || !envServer.medusaApiKey) return null;
+  if (!baseUrl || !process.env.NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY) return null;
 
-  const res = await fetch(`${baseUrl}/admin/orders/${encodeURIComponent(id)}`, {
-    headers: {
-      "content-type": "application/json",
-      "x-medusa-access-token": envServer.medusaApiKey,
-    },
-    cache: "no-store",
-  }).catch(() => null);
-
-  if (!res?.ok) return null;
-
-  const json = (await res.json().catch(() => null)) as MedusaAdminOrderResponse | null;
-  if (!json?.order?.id) return null;
-  return mapMedusaOrder(json.order);
+  try {
+    const json = await medusaFetch<MedusaStoreOrderResponse>(`/store/orders/${encodeURIComponent(id)}`);
+    if (!json?.order?.id) return null;
+    return mapMedusaOrder(json.order);
+  } catch {
+    return null;
+  }
 }
