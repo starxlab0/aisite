@@ -265,7 +265,7 @@ function mapMedusaOrder(order: MedusaStoreOrder): Order {
     fulfillmentStatus: "unfulfilled",
     total: Number(order.total ?? 0) || 0,
     currency: String(order.currency_code ?? "USD").toUpperCase(),
-    amountUnit: "minor",
+    amountUnit: "major",
     createdAt: order.created_at ?? new Date().toISOString(),
     updatedAt: order.updated_at ?? new Date().toISOString(),
     statusSource: "medusa_store",

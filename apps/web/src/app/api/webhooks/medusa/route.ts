@@ -53,7 +53,7 @@ function normalizeOrderFromWebhook(order: WebhookOrder): Order | null {
     fulfillmentStatus: normalizeFulfillmentStatus(order.fulfillment_status),
     total: Number(order.total ?? 0) || 0,
     currency: String(order.currency_code ?? "USD").toUpperCase(),
-    amountUnit: "minor",
+    amountUnit: "major",
     createdAt: order.created_at ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     statusSource: "medusa_webhook",
