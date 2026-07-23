@@ -208,7 +208,7 @@ export default async function OrderPage({ params, searchParams }: Props) {
       {!mergedLiveOrder ? (
         <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           当前展示的是{storedOrder ? "服务端订单快照" : "本地下单快照"}，不是实时订单查询结果。
-          {!envServer.medusaApiKey ? " 若要读取 Medusa 实时订单状态，请配置 MEDUSA_API_KEY。" : null}
+          {!envServer.medusaPublishableKey ? " 若要读取 Medusa 实时订单状态，请配置 NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY。" : null}
         </div>
       ) : null}
       <CheckoutSignalTracker targets={purchaseTargets} dedupeKey={`order:${order.id}`} eventType="checkout_complete" />
