@@ -186,7 +186,7 @@ export default async function OrderPage({ params, searchParams }: Props) {
     stripeState,
     sessionId,
   });
-  const order = mergedLiveOrder ?? resolvedFallbackOrder;
+  const order = resolvedFallbackOrder ?? mergedLiveOrder;
 
   if (!order) {
     return (
