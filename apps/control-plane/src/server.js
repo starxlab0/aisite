@@ -2,6 +2,9 @@ const http = require("http");
 const { siteProfile, assets } = require("./data/bootstrap-knowledge");
 const { actionRuns } = require("./data/bootstrap-actions");
 const { adapterName, getDraftById, listDrafts } = require("./cms-adapters");
+const { requireOpsAdmin } = require("./ops/auth");
+const { errorEnvelope, okEnvelope, readJsonBody, sendJson } = require("./ops/json");
+const { getOrderSnapshot, upsertOrderSnapshot } = require("./ops/order-snapshots");
 const { startSeoSearchConsoleScheduler } = require("./ops/seo-search-console-sync");
 const { handleOpsRoute } = require("./ops/router");
 const { handleSignalsRoute } = require("./signals/router");
@@ -40,6 +43,39 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
 
   try {
+    if (url.pathname === "/ops/order-snapshots" && req.method === "POST") {
+      const auth = requireOpsAdmin(req);
+      if (!auth.ok) {
+        sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter: adapterName }));
+        return;
+      }
+      const body = (await readJsonBody(req)) ?? {};
+      const order = body.order ?? null;
+      if (!order?.id) {
+        sendJson(res, 400, errorEnvelope("Order snapshot payload requires order.id", { cmsAdapter: adapterName }));
+        return;
+      }
+      const snapshot = upsertOrderSnapshot({ order });
+      sendJson(res, 200, okEnvelope({ snapshot }, { cmsAdapter: adapterName }));
+      return;
+    }
+
+    if (url.pathname.startsWith("/ops/order-snapshots/") && req.method === "GET") {
+      const auth = requireOpsAdmin(req);
+      if (!auth.ok) {
+        sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter: adapterName }));
+        return;
+      }
+      const id = decodeURIComponent(url.pathname.split("/").slice(-1)[0] || "");
+      const snapshot = getOrderSnapshot(id);
+      if (!snapshot) {
+        sendJson(res, 404, errorEnvelope("Order snapshot not found", { cmsAdapter: adapterName }));
+        return;
+      }
+      sendJson(res, 200, okEnvelope({ snapshot }, { cmsAdapter: adapterName }));
+      return;
+    }
+
     const handledSignals = await handleSignalsRoute(req, res, url);
     if (handledSignals) return;
 
