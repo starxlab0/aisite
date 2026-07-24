@@ -60,6 +60,26 @@ export function createGrowthDistinctId(parts: Array<string | null | undefined>) 
     .digest("hex");
 }
 
+function normalizeSignalEventType(eventType: string) {
+  if (["view", "cta", "add_to_cart", "purchase"].includes(eventType)) {
+    return eventType;
+  }
+
+  if (eventType.startsWith("view_")) {
+    return "view";
+  }
+
+  if (eventType.startsWith("click_")) {
+    return "cta";
+  }
+
+  if (["begin_checkout", "complete_quiz", "subscribe_newsletter", "expand_faq"].includes(eventType)) {
+    return "cta";
+  }
+
+  return "cta";
+}
+
 export async function sendGrowthSignal(input: GrowthSignalInput): Promise<GrowthDeliveryResult> {
   if (!envServer.controlPlaneUrl) {
     return { status: "skipped", reason: "control_plane_not_configured" };
@@ -67,6 +87,12 @@ export async function sendGrowthSignal(input: GrowthSignalInput): Promise<Growth
   if (!envServer.signalsIngestToken) {
     return { status: "skipped", reason: "signals_token_not_configured" };
   }
+
+  const normalizedEventType = normalizeSignalEventType(input.eventType);
+  const metadata = {
+    ...(input.metadata ?? {}),
+    originalEventType: input.eventType,
+  };
 
   try {
     const response = await fetch(`${envServer.controlPlaneUrl.replace(/\/$/, "")}/signals/track`, {
@@ -79,10 +105,10 @@ export async function sendGrowthSignal(input: GrowthSignalInput): Promise<Growth
         targetType: input.targetType,
         targetId: input.targetId,
         contentRef: input.contentRef ?? null,
-        eventType: input.eventType,
+        eventType: normalizedEventType,
         source: input.source ?? "web",
         dedupeKey: input.dedupeKey ?? null,
-        metadata: input.metadata ?? null,
+        metadata,
       }),
       cache: "no-store",
     });
