@@ -95,7 +95,7 @@ export default async function CollectionPage({ params, searchParams }: Props) {
           {previewBadge}: 当前页面正在渲染未发布内容（仅用于预览）。
         </div>
       ) : null}
-      <div className="flex items-end justify-between gap-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight text-zinc-900">
             {heroTitle}

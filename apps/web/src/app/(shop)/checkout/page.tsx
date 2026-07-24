@@ -22,7 +22,8 @@ export default async function CheckoutPage() {
           <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">结账</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-900">Checkout</h1>
           <p className="mt-3 max-w-2xl text-zinc-600">
-            现在已经是正式结账结构：收货信息、订单摘要、支付说明都会在这里确认。支付链路会继续按 `Medusa + Stripe` 补全。
+            这里会确认收货信息、订单摘要和支付方式。若 `Stripe` 已配置，会直接进入正式支付；
+            否则先按当前订单链路完成下单。
           </p>
         </div>
       </div>
@@ -77,7 +78,9 @@ export default async function CheckoutPage() {
             <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600">
               <p className="font-medium text-zinc-900">支付说明</p>
               <p className="mt-2">
-                当前阶段会先创建订单并进入订单页，后续继续补齐 Stripe 正式支付会话、支付状态同步与失败恢复。
+                {envServer.stripeSecretKey
+                  ? "当前会优先进入 Stripe 正式支付流程，支付完成后再回到订单页查看状态。"
+                  : "当前会先创建订单并进入订单页；如果要启用正式支付，请继续补齐 Stripe 生产环境配置。"}
               </p>
             </div>
             <button
@@ -91,7 +94,7 @@ export default async function CheckoutPage() {
           </form>
         </div>
         <div className="space-y-6">
-          <div className="rounded-[2rem] border border-zinc-200 bg-white p-6">
+          <div className="rounded-[2rem] border border-zinc-200 bg-white p-6 lg:sticky lg:top-28">
             <p className="text-sm font-medium text-zinc-900">Order summary</p>
             <ul className="mt-4 space-y-4 text-sm text-zinc-700">
               {cart.items.length ? (
