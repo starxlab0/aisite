@@ -9,6 +9,7 @@
 - `medusa-local-setup.md`：本地运行 Medusa backend、配置数据库、创建 API key 与联调前台的说明
 - `medusa-test-products.md`：Medusa 测试商品字段规范与首批测试商品模板
 - `deployment.md`：Vercel 前台部署、环境变量、CORS 与 webhook 配置说明
+- `launch-checklist-lite.md`：上线当天可直接照着走的短检查单
 - `platformization.md`：第一批平台化代码骨架、目录边界与后续扩展建议
 
 ## 阅读顺序建议
