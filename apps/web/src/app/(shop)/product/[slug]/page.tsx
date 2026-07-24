@@ -161,7 +161,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
           {previewBadge}: 当前页面正在渲染未发布内容（仅用于预览）。
         </div>
       ) : null}
-      <div className="flex items-start justify-between gap-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight text-zinc-900">
             {vm.title}
@@ -190,7 +190,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
       </div>
 
       <div className="mt-10 grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
-        <div className="space-y-6">
+        <div className="order-2 space-y-6 lg:order-1">
           <div className="rounded-[2rem] border border-zinc-200 bg-white p-6">
             <div className="flex aspect-[4/3] items-end justify-between rounded-[1.5rem] bg-gradient-to-br from-zinc-50 via-white to-zinc-100 p-6">
               <div>
@@ -291,7 +291,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
           </div>
         </div>
 
-        <div className="space-y-5 lg:sticky lg:top-28 lg:self-start">
+        <div className="order-1 space-y-5 lg:order-2 lg:sticky lg:top-28 lg:self-start">
           <AiConciergeEntry placement="product" productSlug={slug} />
           <div className="rounded-[2rem] border border-zinc-200 bg-white p-6">
             <p className="text-sm text-zinc-500">Price / Stock</p>
@@ -340,6 +340,14 @@ export default async function ProductPage({ params, searchParams }: Props) {
                 加入购物车
               </TrackedSubmitButton>
             </form>
+            <div className="mt-3 flex flex-wrap gap-3 text-sm">
+              <Link className="underline underline-offset-4" href="/cart">
+                去购物车
+              </Link>
+              <Link className="underline underline-offset-4" href="/checkout">
+                直接去结账
+              </Link>
+            </div>
             <div className="mt-4 flex flex-wrap gap-2">
               {vm.badges.map((b) => (
                 <span key={b} className="rounded-full bg-zinc-100 px-2 py-1 text-xs text-zinc-700">
