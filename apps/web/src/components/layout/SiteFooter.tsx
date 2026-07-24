@@ -19,7 +19,9 @@ export function SiteFooter() {
               ))}
             </div>
           </div>
-          <FooterNewsletter brandName={site.brand.name} />
+          <div className="w-full md:w-auto">
+            <FooterNewsletter brandName={site.brand.name} />
+          </div>
         </div>
       </div>
     </footer>

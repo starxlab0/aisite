@@ -46,7 +46,7 @@ export default async function GuideDetailPage({ params }: Props) {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(guideJsonLd) }}
       />
-      <div className="flex items-start justify-between gap-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
             {article?.title ?? `Guide: ${slug}`}
