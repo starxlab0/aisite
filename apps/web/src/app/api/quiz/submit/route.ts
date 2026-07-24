@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { sendGrowthSignal } from "@/lib/growth/server";
+import { createGrowthDistinctId, sendGrowthSignal, sendPosthogEvent } from "@/lib/growth/server";
 
 type QuizSubmitBody = {
   source?: string;
@@ -42,5 +42,24 @@ export async function POST(req: Request) {
     },
   });
 
-  return NextResponse.json({ ok: true, signal });
+  const posthog = await sendPosthogEvent({
+    event: "complete_quiz",
+    distinctId: createGrowthDistinctId([
+      "quiz",
+      body.source,
+      body.sourceProductSlug,
+      body.dedupeKey || recommended.join(","),
+    ]),
+    properties: {
+      source: body.source ?? "unknown",
+      source_product_slug: body.sourceProductSlug ?? null,
+      bucket: body.bucket ?? null,
+      experiment: body.experiment ?? null,
+      summary: body.summary ?? null,
+      answers: body.answers,
+      recommended,
+    },
+  });
+
+  return NextResponse.json({ ok: true, signal, posthog });
 }

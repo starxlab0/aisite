@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { sendGrowthSignal } from "@/lib/growth/server";
+import { createGrowthDistinctId, sendGrowthSignal, sendPosthogEvent } from "@/lib/growth/server";
 
 type AnalyticsRequestBody = {
   name?: string;
@@ -47,5 +47,20 @@ export async function POST(req: Request) {
     metadata: payload,
   });
 
-  return NextResponse.json({ ok: true, signal });
+  const posthog = await sendPosthogEvent({
+    event: name,
+    distinctId: createGrowthDistinctId([
+      "analytics",
+      targetType,
+      targetId,
+      typeof payload.dedupeKey === "string" ? payload.dedupeKey : null,
+    ]),
+    properties: {
+      target_type: targetType,
+      target_id: targetId,
+      ...payload,
+    },
+  });
+
+  return NextResponse.json({ ok: true, signal, posthog });
 }
