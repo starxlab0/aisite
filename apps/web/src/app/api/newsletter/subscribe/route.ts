@@ -10,6 +10,8 @@ import {
   sendWelcomeEmail,
 } from "@/lib/growth/server";
 
+export const runtime = "nodejs";
+
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => null)) as
     | { email?: string; source?: string; placement?: string }
