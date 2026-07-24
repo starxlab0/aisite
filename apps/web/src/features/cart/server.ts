@@ -143,11 +143,26 @@ export async function addItemToCurrentCart(input: {
     });
   }
 
+  const quantity = input.quantity ?? 1;
+  const cookieStore = await cookies();
   const cart = await getOrCreateCurrentCart();
-  return addLineItem(cart.id, {
-    variantId: input.variantId,
-    quantity: input.quantity ?? 1,
-  });
+
+  try {
+    return await addLineItem(cart.id, {
+      variantId: input.variantId,
+      quantity,
+    });
+  } catch {
+    // 老 cart 可能来自已失效、已完成支付或状态不一致的历史会话。
+    // 一旦加购失败，清掉旧 cart_id 并重建购物车重试一次，避免用户直接看到 500。
+    cookieStore.delete(CART_COOKIE_NAME);
+
+    const freshCart = await getOrCreateCurrentCart();
+    return addLineItem(freshCart.id, {
+      variantId: input.variantId,
+      quantity,
+    });
+  }
 }
 
 export async function updateItemInMockCart(input: MockUpdateItemInput): Promise<Cart> {
