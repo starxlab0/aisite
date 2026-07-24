@@ -150,13 +150,24 @@ function buildWelcomeEmailHtml(input: WelcomeEmailInput) {
   `;
 }
 
+function getRuntimeEnv(name: string) {
+  const value = process.env[name];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  return normalized ? normalized : undefined;
+}
+
 export async function sendWelcomeEmail(input: WelcomeEmailInput): Promise<GrowthDeliveryResult> {
-  if (!envServer.resendApiKey) {
+  const resendApiKey = getRuntimeEnv("RESEND_API_KEY");
+  if (!resendApiKey) {
     return { status: "skipped", reason: "resend_not_configured" };
   }
 
   const site = getActiveSiteConfig();
-  const from = envServer.resendFromEmail || site.site.commerce.supportEmail;
+  const from = getRuntimeEnv("RESEND_FROM_EMAIL") || site.site.commerce.supportEmail;
   if (!from || from.includes("example.com")) {
     return { status: "skipped", reason: "sender_not_configured" };
   }
@@ -165,7 +176,7 @@ export async function sendWelcomeEmail(input: WelcomeEmailInput): Promise<Growth
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${envServer.resendApiKey}`,
+        Authorization: `Bearer ${resendApiKey}`,
         "content-type": "application/json",
         "user-agent": "aisite-growth/1.0",
       },
@@ -174,7 +185,7 @@ export async function sendWelcomeEmail(input: WelcomeEmailInput): Promise<Growth
         to: [input.email],
         subject: input.subject ?? `Welcome to ${site.brand.name}`,
         html: buildWelcomeEmailHtml(input),
-        reply_to: envServer.resendReplyToEmail || site.site.commerce.supportEmail,
+        reply_to: getRuntimeEnv("RESEND_REPLY_TO_EMAIL") || site.site.commerce.supportEmail,
       }),
       cache: "no-store",
     });
