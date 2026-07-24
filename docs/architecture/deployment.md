@@ -47,7 +47,8 @@ apps/web
 | `NEXT_PUBLIC_SANITY_PROJECT_ID` | Sanity project id |
 | `NEXT_PUBLIC_SANITY_DATASET` | Sanity dataset |
 | `NEXT_PUBLIC_GA_ID` | 可选 |
-| `NEXT_PUBLIC_POSTHOG_KEY` | 可选 |
+| `NEXT_PUBLIC_POSTHOG_KEY` | 可选，PostHog project key |
+| `NEXT_PUBLIC_POSTHOG_HOST` | 可选，默认可填 `https://us.i.posthog.com` |
 
 ### Server
 
@@ -57,6 +58,8 @@ apps/web
 | `SANITY_API_TOKEN` | Sanity server token |
 | `MEDUSA_API_KEY` | 可选，管理端请求使用 |
 | `RESEND_API_KEY` | 可选 |
+| `RESEND_FROM_EMAIL` | 可选，Resend 发信地址，例如 `Brand Store <hello@your-domain.com>` |
+| `RESEND_REPLY_TO_EMAIL` | 可选，回复地址，例如 `support@your-domain.com` |
 | `KLAVIYO_API_KEY` | 可选 |
 | `POSTHOG_SECRET` | 可选 |
 
@@ -64,7 +67,25 @@ apps/web
 
 - `apps/web/.env.production.example`
 
-## 三、Medusa 部署建议
+## 三、增长与邮件联调
+
+如果你要让 `newsletter / quiz / analytics` 真正进入第三方平台，至少补以下变量：
+
+- `NEXT_PUBLIC_POSTHOG_KEY`
+- `NEXT_PUBLIC_POSTHOG_HOST`
+- `RESEND_API_KEY`
+- `RESEND_FROM_EMAIL`
+- `RESEND_REPLY_TO_EMAIL`
+
+补完后建议做一轮最小联调：
+
+1. 在站点 footer 提交一个测试邮箱
+2. 确认 `/api/newsletter/subscribe` 返回 `ok: true`
+3. 在 `PostHog` 中确认出现 `subscribe_newsletter`
+4. 在收件箱中确认收到 welcome email
+5. 打开 `/quiz` 完成一次推荐，确认 `complete_quiz` 进入 `PostHog`
+
+## 四、Medusa 部署建议
 
 前台部署在 `Vercel`，但 `Medusa` 不建议部署在 `Vercel Functions`。  
 更适合部署在支持长期运行 Node 服务与数据库连接的环境，例如：
@@ -96,7 +117,7 @@ apps/medusa/apps/backend
 - Redis
 - Node 20+
 
-## 四、域名与 CORS
+## 五、域名与 CORS
 
 部署后需要在 `Medusa` 环境中配置：
 
@@ -120,7 +141,7 @@ https://*.vercel.app
 
 前提是你们确认只在内部或测试环境使用。
 
-## 五、Sanity 与前台
+## 六、Sanity 与前台
 
 `Sanity` 内容更新后，建议通过 webhook 调用前台：
 
@@ -130,7 +151,7 @@ https://*.vercel.app
 
 再由前台触发 `revalidatePath` 或内部 `/api/revalidate` 刷新页面。
 
-## 六、Medusa 与前台
+## 七、Medusa 与前台
 
 当商品、价格、库存变更时，建议让 `Medusa` 调用：
 
@@ -144,7 +165,7 @@ https://*.vercel.app
 - `/collection/[slug]`
 - `/product/[slug]`
 
-## 七、发布前检查
+## 八、发布前检查
 
 ### 前台
 
@@ -168,7 +189,7 @@ https://*.vercel.app
 - Sanity 环境变量已配置
 - FAQ / Guides / 分类页内容已配置
 
-## 八、当前阶段的上线建议
+## 九、当前阶段的上线建议
 
 当前最适合的上线顺序：
 
@@ -178,15 +199,3 @@ https://*.vercel.app
 4. 部署 `apps/web`
 5. 联调 `/shop`、`/product/[slug]`、`/cart`
 6. 最后再接 checkout 的完整支付流程
-
-## 九、当前代码已支持的部署前提
-
-目前前台已支持：
-
-- 无 `Medusa` 时 mock fallback
-- 有 `Medusa` 时优先请求真实商品
-- 商品页加入购物车 server action
-- 购物车页读取当前 cart
-- checkout 页面读取当前 cart 摘要
-
-这意味着你们可以先部署前台并观察页面，再逐步切真数据和支付能力。
