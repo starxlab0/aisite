@@ -6,6 +6,14 @@ import { formatMoney } from "@/lib/utils/money";
 
 export const dynamic = "force-dynamic";
 
+function getDisplayLineTotal(unitPrice: number, quantity: number, total: number, cartSubtotal: number) {
+  if (total > 0 || cartSubtotal <= 0 || unitPrice <= 0 || quantity <= 0) {
+    return total;
+  }
+
+  return unitPrice * quantity;
+}
+
 export default async function CheckoutPage() {
   const cart = await getCurrentCart();
   const checkoutTargets = cart.items.map((item) => ({
@@ -107,7 +115,12 @@ export default async function CheckoutPage() {
                       <p>{item.title ?? item.productHandle ?? item.productId}</p>
                       <p className="mt-1 text-zinc-500">× {item.quantity}</p>
                     </div>
-                    <span>{formatMoney(item.total, cart.currency)}</span>
+                    <span>
+                      {formatMoney(
+                        getDisplayLineTotal(item.unitPrice, item.quantity, item.total, cart.subtotal),
+                        cart.currency,
+                      )}
+                    </span>
                   </li>
                 ))
               ) : (

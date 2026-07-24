@@ -6,6 +6,14 @@ import {
 import { getCurrentCart } from "@/features/cart/server";
 import { formatMoney } from "@/lib/utils/money";
 
+function getDisplayLineTotal(unitPrice: number, quantity: number, total: number, cartSubtotal: number) {
+  if (total > 0 || cartSubtotal <= 0 || unitPrice <= 0 || quantity <= 0) {
+    return total;
+  }
+
+  return unitPrice * quantity;
+}
+
 export default async function CartPage() {
   const cart = await getCurrentCart();
   const itemCount = cart.items.reduce((sum, item) => sum + item.quantity, 0);
@@ -79,7 +87,10 @@ export default async function CartPage() {
                     </form>
                     <div className="flex w-full items-center justify-between gap-4 md:w-auto md:justify-end">
                       <p className="text-sm font-medium text-zinc-900">
-                        {formatMoney(item.total, cart.currency)}
+                        {formatMoney(
+                          getDisplayLineTotal(item.unitPrice, item.quantity, item.total, cart.subtotal),
+                          cart.currency,
+                        )}
                       </p>
                       <form action={removeCartLineItemAction}>
                         <input type="hidden" name="lineItemId" value={item.id} />
