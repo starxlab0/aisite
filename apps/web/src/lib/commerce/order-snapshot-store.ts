@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "fs/promises";
 import type { Order } from "@/types/order";
+import { envServer } from "@/lib/env/server";
 
 const SNAPSHOT_DIR = process.env.ORDER_SNAPSHOT_STORE_DIR || process.env.TMPDIR || "/tmp";
 const SNAPSHOT_FILE = `${SNAPSHOT_DIR.replace(/\/$/, "")}/web-order-snapshots.json`;
@@ -52,6 +53,63 @@ async function ensureParentDir() {
   await mkdir(SNAPSHOT_DIR, { recursive: true });
 }
 
+function canUseRemoteSnapshotStore() {
+  return Boolean(envServer.controlPlaneUrl && envServer.opsAdminToken);
+}
+
+async function fetchRemoteSnapshot(id: string): Promise<Order | null> {
+  if (!canUseRemoteSnapshotStore()) return null;
+  try {
+    const res = await fetch(
+      `${envServer.controlPlaneUrl!.replace(/\/$/, "")}/ops/order-snapshots/${encodeURIComponent(id)}`,
+      {
+        method: "GET",
+        headers: {
+          "content-type": "application/json",
+          "x-ops-admin-token": envServer.opsAdminToken!,
+        },
+        cache: "no-store",
+      },
+    );
+
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      throw new Error(`remote_snapshot_get_${res.status}`);
+    }
+
+    const json = (await res.json()) as { data?: { snapshot?: Order | null } };
+    return json?.data?.snapshot ?? null;
+  } catch (error) {
+    console.error("Failed to read remote order snapshot", error);
+    return null;
+  }
+}
+
+async function upsertRemoteSnapshot(order: Order) {
+  if (!canUseRemoteSnapshotStore()) return false;
+  try {
+    const res = await fetch(`${envServer.controlPlaneUrl!.replace(/\/$/, "")}/ops/order-snapshots`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-ops-admin-token": envServer.opsAdminToken!,
+      },
+      body: JSON.stringify({
+        source: order.statusSource ?? "web",
+        order,
+      }),
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      throw new Error(`remote_snapshot_upsert_${res.status}`);
+    }
+    return true;
+  } catch (error) {
+    console.error("Failed to persist remote order snapshot", error);
+    return false;
+  }
+}
+
 async function readStore(): Promise<OrderSnapshotMap> {
   try {
     const raw = await readFile(SNAPSHOT_FILE, "utf8");
@@ -72,7 +130,7 @@ async function writeStore(next: OrderSnapshotMap) {
   await writeFile(SNAPSHOT_FILE, JSON.stringify(limited, null, 2), "utf8");
 }
 
-export async function upsertOrderSnapshot(order: Order) {
+async function upsertLocalOrderSnapshot(order: Order) {
   try {
     const current = await readStore();
     current[order.id] = mergeOrderSnapshot(current[order.id], order);
@@ -82,7 +140,7 @@ export async function upsertOrderSnapshot(order: Order) {
   }
 }
 
-export async function getStoredOrderSnapshotById(id: string): Promise<Order | null> {
+async function getLocalStoredOrderSnapshotById(id: string): Promise<Order | null> {
   try {
     const current = await readStore();
     return current[id] ?? null;
@@ -90,4 +148,19 @@ export async function getStoredOrderSnapshotById(id: string): Promise<Order | nu
     console.error("Failed to read stored order snapshot", error);
     return null;
   }
+}
+
+export async function upsertOrderSnapshot(order: Order) {
+  const remoteOk = await upsertRemoteSnapshot(order);
+  if (!remoteOk) {
+    await upsertLocalOrderSnapshot(order);
+    return;
+  }
+  await upsertLocalOrderSnapshot(order);
+}
+
+export async function getStoredOrderSnapshotById(id: string): Promise<Order | null> {
+  const remoteSnapshot = await fetchRemoteSnapshot(id);
+  if (remoteSnapshot) return remoteSnapshot;
+  return getLocalStoredOrderSnapshotById(id);
 }
