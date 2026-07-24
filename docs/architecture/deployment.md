@@ -66,6 +66,7 @@ apps/web
 可参考：
 
 - `apps/web/.env.production.example`
+- `docs/architecture/launch-checklist-lite.md`
 
 ## 三、增长与邮件联调
 
@@ -199,3 +200,15 @@ https://*.vercel.app
 4. 部署 `apps/web`
 5. 联调 `/shop`、`/product/[slug]`、`/cart`
 6. 最后再接 checkout 的完整支付流程
+
+## 九、当前代码已支持的部署前提
+
+目前前台已支持：
+
+- 无 `Medusa` 时 mock fallback
+- 有 `Medusa` 时优先请求真实商品
+- 商品页加入购物车 server action
+- 购物车页读取当前 cart
+- checkout 页面读取当前 cart 摘要
+
+这意味着你们可以先部署前台并观察页面，再逐步切真数据和支付能力。
