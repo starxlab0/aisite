@@ -9,8 +9,12 @@ export const envServer = {
   opsAdminToken: process.env.OPS_ADMIN_TOKEN,
   signalsIngestToken: process.env.SIGNALS_INGEST_TOKEN || process.env.OPS_ADMIN_TOKEN,
   resendApiKey: process.env.RESEND_API_KEY,
+  resendFromEmail: process.env.RESEND_FROM_EMAIL,
+  resendReplyToEmail: process.env.RESEND_REPLY_TO_EMAIL,
   klaviyoApiKey: process.env.KLAVIYO_API_KEY,
   posthogSecret: process.env.POSTHOG_SECRET,
+  posthogKey: process.env.NEXT_PUBLIC_POSTHOG_KEY,
+  posthogHost: process.env.NEXT_PUBLIC_POSTHOG_HOST || process.env.POSTHOG_HOST,
   stripeSecretKey: process.env.STRIPE_SECRET_KEY,
   stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
 };

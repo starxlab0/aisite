@@ -25,6 +25,12 @@ type WelcomeEmailInput = {
   intro?: string;
 };
 
+type PosthogEventInput = {
+  event: string;
+  distinctId: string;
+  properties?: Record<string, unknown> | null;
+};
+
 export function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
@@ -41,6 +47,17 @@ export function getEmailDomain(email: string) {
   const normalized = normalizeEmail(email);
   const [, domain = ""] = normalized.split("@");
   return domain || null;
+}
+
+export function createGrowthDistinctId(parts: Array<string | null | undefined>) {
+  return createHash("sha256")
+    .update(
+      parts
+        .map((part) => String(part || "").trim())
+        .filter(Boolean)
+        .join(":"),
+    )
+    .digest("hex");
 }
 
 export async function sendGrowthSignal(input: GrowthSignalInput): Promise<GrowthDeliveryResult> {
@@ -80,6 +97,40 @@ export async function sendGrowthSignal(input: GrowthSignalInput): Promise<Growth
   }
 }
 
+export async function sendPosthogEvent(input: PosthogEventInput): Promise<GrowthDeliveryResult> {
+  const apiKey = envServer.posthogKey;
+  if (!apiKey) {
+    return { status: "skipped", reason: "posthog_key_not_configured" };
+  }
+
+  const host = (envServer.posthogHost || "https://us.i.posthog.com").replace(/\/$/, "");
+
+  try {
+    const response = await fetch(`${host}/capture/`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "aisite-growth/1.0",
+      },
+      body: JSON.stringify({
+        api_key: apiKey,
+        event: input.event,
+        distinct_id: input.distinctId,
+        properties: input.properties ?? {},
+      }),
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      return { status: "failed", reason: `posthog_http_${response.status}` };
+    }
+
+    return { status: "sent" };
+  } catch {
+    return { status: "failed", reason: "posthog_fetch_failed" };
+  }
+}
+
 function buildWelcomeEmailHtml(input: WelcomeEmailInput) {
   const site = getActiveSiteConfig();
   return `
@@ -105,7 +156,7 @@ export async function sendWelcomeEmail(input: WelcomeEmailInput): Promise<Growth
   }
 
   const site = getActiveSiteConfig();
-  const from = site.site.commerce.supportEmail;
+  const from = envServer.resendFromEmail || site.site.commerce.supportEmail;
   if (!from || from.includes("example.com")) {
     return { status: "skipped", reason: "sender_not_configured" };
   }
@@ -123,6 +174,7 @@ export async function sendWelcomeEmail(input: WelcomeEmailInput): Promise<Growth
         to: [input.email],
         subject: input.subject ?? `Welcome to ${site.brand.name}`,
         html: buildWelcomeEmailHtml(input),
+        reply_to: envServer.resendReplyToEmail || site.site.commerce.supportEmail,
       }),
       cache: "no-store",
     });

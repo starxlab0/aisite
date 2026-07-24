@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import {
+  createGrowthDistinctId,
   getEmailDomain,
   hashEmail,
   isValidEmail,
   normalizeEmail,
+  sendPosthogEvent,
   sendGrowthSignal,
   sendWelcomeEmail,
 } from "@/lib/growth/server";
@@ -36,6 +38,20 @@ export async function POST(req: Request) {
     },
   });
 
+  const posthog = await sendPosthogEvent({
+    event: "subscribe_newsletter",
+    distinctId: emailHash,
+    properties: {
+      $set: {
+        email,
+      },
+      email_domain: getEmailDomain(email),
+      source: body?.source ?? "unknown",
+      placement: body?.placement ?? "unknown",
+      distinct_source: createGrowthDistinctId(["newsletter", body?.source, body?.placement]),
+    },
+  });
+
   const welcomeEmail = await sendWelcomeEmail({
     email,
     intro: "You’re on the list. We’ll send practical updates, not daily noise.",
@@ -45,6 +61,7 @@ export async function POST(req: Request) {
     ok: true,
     integrations: {
       signal,
+      posthog,
       welcomeEmail,
     },
   });
