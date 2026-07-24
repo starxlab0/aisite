@@ -63,7 +63,7 @@ export default async function GuideDetailPage({ params }: Props) {
         </Link>
       </div>
       <p className="mt-4 text-zinc-600">
-        {article?.excerpt ?? "详情页骨架：后续从 Sanity 或 control-plane 已发布 draft 拉取文章正文与关联商品。"}
+        {article?.excerpt ?? "这篇导购会围绕使用场景、选择标准和适合人群展开。如果正文还没补齐，先把它当作一个把内容继续带回商品与合集的入口。"}
       </p>
       <div className="mt-8 rounded-xl border border-zinc-200 bg-white p-5">
         <p className="text-sm font-medium text-zinc-900">Body</p>
@@ -74,7 +74,10 @@ export default async function GuideDetailPage({ params }: Props) {
             ))}
           </div>
         ) : (
-          <p className="mt-3 text-sm text-zinc-600">暂无正文内容。</p>
+          <div className="mt-3 space-y-3 text-sm leading-6 text-zinc-600">
+            <p>当前正文内容还没有完全补齐，但你可以先按这篇 guide 的主题继续缩小范围。</p>
+            <p>如果你是第一次购买，优先回到问答页；如果你已经知道自己想看哪类路线，直接进入相关 collection 或商品页会更快。</p>
+          </div>
         )}
       </div>
       {(relatedProducts.length || article?.relatedCollectionSlugs?.length) ? (

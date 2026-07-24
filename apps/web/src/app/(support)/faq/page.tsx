@@ -86,18 +86,34 @@ export default async function FaqPage({ searchParams }: Props) {
         {content.source === "sanity-faqItem"
           ? (
               <>
-                当前页面已从 Sanity 的 <code className="rounded bg-zinc-100 px-1">faqItem</code>{" "}
-                聚合读取内容。
+                这里集中回答购买前最常被问到的问题，包括隐私包装、清洁、连接稳定性、配送与售后说明。
+                当前内容已从 Sanity 聚合读取，并会随着内容更新持续同步。
               </>
             )
           : content.source === "control-plane-draft"
-            ? "当前页面已接入 control-plane draft，会优先展示已发布的 FAQ 内容。"
-          : (
-              <>
-                支持页骨架：后续由 Sanity 的 <code className="rounded bg-zinc-100 px-1">faqItem</code> 驱动。
-              </>
-            )}
+            ? "这里优先展示已经发布的 FAQ 内容，方便在支付前先把隐私、清洁、配送和使用顾虑一次看清。"
+            : (
+                <>
+                  当前 FAQ 还在继续补充中，但已经覆盖购买前最常见的疑问。若这里没有命中你的问题，
+                  可以继续查看配送、退换或直接联系支持。
+                </>
+              )}
       </p>
+
+      <div className="mt-6 grid gap-4 sm:grid-cols-3">
+        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+          <p className="text-sm font-medium text-zinc-900">购买前先看</p>
+          <p className="mt-2 text-sm leading-6 text-zinc-600">是否适合自己、是否安静、是否支持 App，以及第一次购买是否容易上手。</p>
+        </div>
+        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+          <p className="text-sm font-medium text-zinc-900">支付前再确认</p>
+          <p className="mt-2 text-sm leading-6 text-zinc-600">配送方式、隐私包装、退换范围和联系客服时需要准备哪些信息。</p>
+        </div>
+        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+          <p className="text-sm font-medium text-zinc-900">如果还不确定</p>
+          <p className="mt-2 text-sm leading-6 text-zinc-600">可以先做问答缩小范围，再回到商品页比较 FAQ、参数和价格。</p>
+        </div>
+      </div>
 
       {content.groups.length > 0 ? (
         <div className="mt-8 space-y-6">
