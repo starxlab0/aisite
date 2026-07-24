@@ -31,6 +31,22 @@ function stockLabel(product: CommerceProduct) {
   return "现货可下单";
 }
 
+function runtimeLabel(product: CommerceProduct) {
+  if (product.runtimeMinutes) {
+    return `${product.runtimeMinutes} 分钟`;
+  }
+
+  return "详情页查看";
+}
+
+function waterproofLabel(product: CommerceProduct) {
+  if (product.waterproof) {
+    return product.waterproof;
+  }
+
+  return "未标注";
+}
+
 export function ProductCard({ product, href, eyebrow, compact = false, plain = false }: ProductCardProps) {
   const targetHref = href ?? `/product/${product.slug}`;
   const badges = buildProductBadges(product);
@@ -80,12 +96,12 @@ export function ProductCard({ product, href, eyebrow, compact = false, plain = f
             <div>
               <p className="text-zinc-500">续航</p>
               <p className="mt-1 font-medium text-zinc-900">
-                {product.runtimeMinutes ? `${product.runtimeMinutes} 分钟` : "待补充"}
+                {runtimeLabel(product)}
               </p>
             </div>
             <div>
               <p className="text-zinc-500">防水</p>
-              <p className="mt-1 font-medium text-zinc-900">{product.waterproof || "待补充"}</p>
+              <p className="mt-1 font-medium text-zinc-900">{waterproofLabel(product)}</p>
             </div>
             <div>
               <p className="text-zinc-500">静音度</p>
