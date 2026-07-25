@@ -3,6 +3,7 @@ const { getAutoActionPolicy, updateAutoActionPolicy } = require("./auto-action-p
 const { createRepoChangePullRequest, createRepoChangeRevertPullRequest, syncActiveRepoChangesFromGitHub, syncRepoChangeFromGitHub } = require("./github");
 const { readJsonBody, sendJson } = require("./json");
 const { buildMonitoringSummary } = require("./monitoring");
+const { getOrderSnapshot, upsertOrderSnapshot } = require("./order-snapshots");
 const { listAllTargets, findTarget } = require("./targets");
 const { listDrafts } = require("../cms-adapters");
 const {
@@ -146,6 +147,43 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
     const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit") || 10)));
     const items = listRepoChanges({ status, targetType, targetId }).slice(0, limit);
     sendJson(res, 200, okEnvelope({ items, total: items.length }, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname === "/ops/order-snapshots" && req.method === "POST") {
+    const auth = requireOpsAdmin(req);
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const body = (await readJsonBody(req)) ?? {};
+    const order = body.order ?? null;
+    if (!order?.id) {
+      sendJson(res, 400, errorEnvelope("Order snapshot payload requires order.id", { cmsAdapter }));
+      return true;
+    }
+    const snapshot = upsertOrderSnapshot({
+      order,
+      actor,
+      source: String(body.source || "web"),
+    });
+    sendJson(res, 200, okEnvelope({ snapshot }, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname.startsWith("/ops/order-snapshots/") && req.method === "GET") {
+    const auth = requireOpsAdmin(req);
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const id = decodeURIComponent(url.pathname.split("/").slice(-1)[0] || "");
+    const snapshot = getOrderSnapshot(id);
+    if (!snapshot) {
+      sendJson(res, 404, errorEnvelope("Order snapshot not found", { cmsAdapter }));
+      return true;
+    }
+    sendJson(res, 200, okEnvelope({ snapshot }, { cmsAdapter }));
     return true;
   }
 
@@ -759,7 +797,6 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
     const q = url.searchParams.get("q") || undefined;
     const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") || 200)));
     const offset = Math.max(0, Number(url.searchParams.get("offset") || 0));
-
     const filtered = listEvents({ category, targetType, targetId, action, actionPrefix, actor, q });
     const items = filtered.slice(offset, offset + limit);
     sendJson(res, 200, okEnvelope({ items, total: filtered.length, limit, offset }, { cmsAdapter }));
