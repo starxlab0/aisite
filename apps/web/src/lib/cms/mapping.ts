@@ -11,6 +11,12 @@ function truthyBadges(p: CommerceProduct): string[] {
   return badges;
 }
 
+function formatWaterproof(waterproof: CommerceProduct["waterproof"]) {
+  if (!waterproof) return null;
+  if (waterproof === "none") return "不支持防水";
+  return waterproof;
+}
+
 export function toProductPageViewModel(input: {
   commerce: CommerceProduct;
   content?: ProductContent | null;
@@ -41,19 +47,19 @@ export function toProductPageViewModel(input: {
     whoItsFor: content?.whoItsFor ?? [],
     whyItFeelsDifferent: content?.whyItFeelsDifferent ?? [],
     specs: [
-      commerce.material ? { label: "Material", value: commerce.material } : null,
-      commerce.waterproof
-        ? { label: "Waterproof", value: commerce.waterproof }
+      commerce.material ? { label: "材质", value: commerce.material } : null,
+      formatWaterproof(commerce.waterproof)
+        ? { label: "防水", value: formatWaterproof(commerce.waterproof)! }
         : null,
       typeof commerce.runtimeMinutes === "number"
-        ? { label: "Runtime", value: `${commerce.runtimeMinutes} min` }
+        ? { label: "续航", value: `${commerce.runtimeMinutes} 分钟` }
         : null,
       typeof commerce.chargeMinutes === "number"
-        ? { label: "Charge", value: `${commerce.chargeMinutes} min` }
+        ? { label: "充电", value: `${commerce.chargeMinutes} 分钟` }
         : null,
-      commerce.sizeText ? { label: "Size", value: commerce.sizeText } : null,
+      commerce.sizeText ? { label: "尺寸", value: commerce.sizeText } : null,
       typeof commerce.weightGrams === "number"
-        ? { label: "Weight", value: `${commerce.weightGrams} g` }
+        ? { label: "重量", value: `${commerce.weightGrams} g` }
         : null,
     ].filter(Boolean) as Array<{ label: string; value: string }>,
     whatsInBox: content?.whatsInBox ?? [],
@@ -61,4 +67,3 @@ export function toProductPageViewModel(input: {
     relatedProducts: [],
   };
 }
-
