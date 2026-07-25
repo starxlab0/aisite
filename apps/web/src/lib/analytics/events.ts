@@ -14,7 +14,25 @@ export type AnalyticsEventName =
 
 export type AnalyticsEventPayload = Record<string, unknown>;
 
-export function track(_name: AnalyticsEventName, _payload?: AnalyticsEventPayload) {
-  // TODO: 接入 PostHog / GA4。MVP 阶段可先做 console 记录或 no-op。
-}
+export function track(name: AnalyticsEventName, payload?: AnalyticsEventPayload) {
+  if (typeof window === "undefined") return;
 
+  try {
+    const body = JSON.stringify({
+      name,
+      payload: payload ?? null,
+    });
+
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon("/api/analytics/track", new Blob([body], { type: "application/json" }));
+      return;
+    }
+
+    fetch("/api/analytics/track", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+  } catch {}
+}

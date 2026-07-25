@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { TrackedLink } from "@/components/signals/tracked-link";
 import { TrackedSubmitButton } from "@/components/signals/tracked-submit-button";
 import { envClient } from "@/lib/env/client";
@@ -77,7 +77,6 @@ function pickRecommendations(products: Product[], answer: Answer) {
       score += p.appControl ? 0 : 1;
     }
 
-    // budget match (price is cents)
     if (Number.isFinite(p.price)) {
       if (p.price >= range.min && p.price < range.max) score += 2;
       else score -= 1;
@@ -180,6 +179,7 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
   const bucket = useMemo(() => (enabled ? getExperimentBucket(envClient.aiConciergeExperiment) : "B"), [enabled]);
 
   const [answer, setAnswer] = useState<Answer>({ firstTime: null, wearable: null, dual: null, budget: null, control: null });
+  const submittedQuizKeyRef = useRef<string | null>(null);
   const done = answer.firstTime && answer.wearable && answer.dual && answer.budget && answer.control;
 
   const recommendations = useMemo(() => (done ? pickRecommendations(products, answer) : []), [done, products, answer]);
@@ -202,7 +202,6 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
   }, [done, answer]);
 
   useEffect(() => {
-    // quiz page view（用于衡量入口转化）
     track("view", {
       experiment: envClient.aiConciergeExperiment,
       bucket,
@@ -215,7 +214,6 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
 
   useEffect(() => {
     if (!done) return;
-    // 推荐曝光（不污染商品 view；用独立 targetId）
     track("view", {
       experiment: envClient.aiConciergeExperiment,
       bucket,
@@ -226,6 +224,30 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
       dedupeKey: `recs:${source}:${sourceProductSlug ?? ""}:${recommendations.map((p) => p.slug).join(",")}`,
     });
   }, [done]);
+
+  useEffect(() => {
+    if (!done) return;
+
+    const dedupeKey = `quiz-submit:${source}:${sourceProductSlug ?? ""}:${recommendations.map((p) => p.slug).join(",")}`;
+    if (submittedQuizKeyRef.current === dedupeKey) return;
+    submittedQuizKeyRef.current = dedupeKey;
+
+    fetch("/api/quiz/submit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        source,
+        sourceProductSlug,
+        bucket,
+        experiment: envClient.aiConciergeExperiment,
+        summary: resultSummary,
+        answers: answer,
+        recommended: recommendations.map((p) => p.slug),
+        dedupeKey,
+      }),
+      keepalive: true,
+    }).catch(() => {});
+  }, [answer, bucket, done, recommendations, resultSummary, source, sourceProductSlug]);
 
   async function addTopPick(product: Product, redirectTo?: "cart" | "checkout") {
     writeAttributionContext({
