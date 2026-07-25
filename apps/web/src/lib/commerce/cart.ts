@@ -1,4 +1,5 @@
 import { getCommerceMode, getMedusaBaseUrl, medusaFetch } from "@/lib/commerce/http";
+import { buildCreateCartPayload } from "@/lib/commerce/cart-logic";
 import type { Cart } from "@/types/cart";
 
 type MedusaCartResponse = {
@@ -87,14 +88,9 @@ export async function createCart(input: CreateCartInput = {}): Promise<Cart> {
     return createEmptyCart();
   }
 
-  const payload: Record<string, string> = {};
-  if (input.regionId) payload.region_id = input.regionId;
-  // Medusa store cart 创建接口不接受 country_code。
-  // 国家/地址信息应在后续 checkout 更新 cart 地址时再写入。
-
   const response = await medusaFetch<MedusaCartResponse>("/store/carts", {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(buildCreateCartPayload(input)),
   });
   return toCart(response);
 }

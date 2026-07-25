@@ -5,9 +5,10 @@
   "scripts": {
     "dev": "node ./node_modules/next/dist/bin/next dev",
     "build:installed": "node ./node_modules/next/dist/bin/next build",
-    "build": "npm install --include=dev --no-audit --no-fund && npm run build:installed",
+    "build": "npm ci --include=dev --no-audit --no-fund && npm run build:installed",
     "start": "node ./node_modules/next/dist/bin/next start",
-    "lint": "node ./node_modules/eslint/bin/eslint.js"
+    "lint": "node ./node_modules/eslint/bin/eslint.js",
+    "test:checkout-regression": "node --experimental-strip-types --test src/lib/commerce/cart-logic.test.ts"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4",
