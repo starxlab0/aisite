@@ -9,8 +9,22 @@ export function getStripeClient() {
   }
   if (!stripeClient) {
     stripeClient = new Stripe(envServer.stripeSecretKey, {
-      apiVersion: "2025-06-30.basil",
+      apiVersion: "2025-08-27.basil",
     });
   }
   return stripeClient;
+}
+
+export function resolveBaseUrl() {
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.SITE_URL;
+  if (siteUrl) {
+    return siteUrl.replace(/\/$/, "");
+  }
+
+  const vercelUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
+  if (vercelUrl) {
+    return `https://${String(vercelUrl).replace(/^https?:\/\//, "").replace(/\/$/, "")}`;
+  }
+
+  return "http://localhost:3000";
 }
