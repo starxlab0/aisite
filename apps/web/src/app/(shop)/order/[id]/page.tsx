@@ -5,6 +5,7 @@ import { getOrderSnapshotById } from "@/features/checkout/session";
 import { getStoredOrderSnapshotById, upsertOrderSnapshot } from "@/lib/commerce/order-snapshot-store";
 import { applyOrderStatusOverlay } from "@/lib/commerce/orders";
 import { getOrderById } from "@/lib/commerce/orders";
+import { envServer } from "@/lib/env/server";
 import { getStripeClient } from "@/lib/payments/stripe";
 import { buildPurchaseTargetsFromOrder, isSuccessfulOrderPayment } from "@/lib/signals/purchase";
 import { formatMoney } from "@/lib/utils/money";
@@ -83,9 +84,56 @@ async function resolveStripeReturnOrder(input: {
       ...nextOrder,
       paymentProvider: "stripe",
       paymentSessionId: session.id,
-      paymentUrl: storedOrder.paymentUrl ?? liveOrder.paymentUrl,
-    },
-  );
+      paymentUrl: order.paymentUrl ?? null,
+    });
+    return nextOrder;
+  } catch {
+    return order;
+  }
+}
+
+function mergeLiveOrderWithSnapshot(liveOrder: Order | null, storedOrder: Order | null) {
+  if (!liveOrder) return storedOrder;
+  if (!storedOrder) return liveOrder;
+
+  return {
+    ...storedOrder,
+    ...liveOrder,
+    items: liveOrder.items?.length ? liveOrder.items : storedOrder.items,
+    paymentProvider: liveOrder.paymentProvider ?? storedOrder.paymentProvider,
+    paymentSessionId: liveOrder.paymentSessionId ?? storedOrder.paymentSessionId,
+    paymentUrl: liveOrder.paymentUrl ?? storedOrder.paymentUrl,
+    statusNote: liveOrder.statusNote ?? storedOrder.statusNote,
+    recoveryActions: liveOrder.recoveryActions?.length ? liveOrder.recoveryActions : storedOrder.recoveryActions,
+  } satisfies Order;
+}
+
+function paymentTone(order: Order) {
+  if (order.paymentStatus === "paid") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-900";
+  }
+  if (order.paymentStatus === "authorized") {
+    return "border-sky-200 bg-sky-50 text-sky-900";
+  }
+  if (order.paymentStatus === "failed") {
+    return "border-rose-200 bg-rose-50 text-rose-900";
+  }
+  return "border-amber-200 bg-amber-50 text-amber-900";
+}
+
+function paymentHeadline(order: Order) {
+  if (order.paymentStatus === "paid") return "支付已完成";
+  if (order.paymentStatus === "authorized") return "支付已授权，等待最终确认";
+  if (order.paymentStatus === "failed") return "这笔订单暂时还没有支付成功";
+  return "订单已创建，正在等待支付结果";
+}
+
+function paymentDescription(order: Order) {
+  if (order.statusNote) return order.statusNote;
+  if (order.paymentStatus === "paid") return "我们已经收到这笔支付，可以继续后续履约。";
+  if (order.paymentStatus === "authorized") return "支付已通过授权，但还可能需要 capture 或后续同步。";
+  if (order.paymentStatus === "failed") return "你可以检查支付方式后重试，或者重新发起这笔支付。";
+  return "如果你刚从 Stripe 返回，可能还在等待 webhook 或订单状态同步。";
 }
 
 function recoveryHeadline(order: Order) {
