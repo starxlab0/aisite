@@ -1,8 +1,9 @@
 export default function PrivacyPage() {
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-14">
+      <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">帮助中心</p>
       <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
-        Privacy
+        隐私说明
       </h1>
       <div className="mt-4 space-y-4 text-zinc-600">
         <p>
@@ -15,7 +16,7 @@ export default function PrivacyPage() {
         </p>
         <p>
           若你希望查询、更新或删除与订单相关的信息，可以通过联系页与我们沟通。后续如果接入更多内容、
-          分析或订阅工具，这里会同步补充更完整的隐私说明。
+          分析或订阅工具，这里也会同步更新相应说明。
         </p>
       </div>
     </div>

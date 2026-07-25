@@ -87,17 +87,16 @@ export default async function FaqPage({ searchParams }: Props) {
           ? (
               <>
                 这里集中回答购买前最常被问到的问题，包括隐私包装、清洁、连接稳定性、配送与售后说明。
-                当前内容已从 Sanity 聚合读取，并会随着内容更新持续同步。
+                适合在下单前先快速确认关键信息。
               </>
             )
           : content.source === "control-plane-draft"
             ? "这里优先展示已经发布的 FAQ 内容，方便在支付前先把隐私、清洁、配送和使用顾虑一次看清。"
-            : (
-                <>
-                  当前 FAQ 还在继续补充中，但已经覆盖购买前最常见的疑问。若这里没有命中你的问题，
-                  可以继续查看配送、退换或直接联系支持。
-                </>
-              )}
+          : (
+              <>
+                这里已经覆盖购买前最常见的疑问。若这里没有命中你的问题，可以继续查看配送、退换或直接联系支持。
+              </>
+            )}
       </p>
 
       <div className="mt-6 grid gap-4 sm:grid-cols-3">
@@ -126,16 +125,20 @@ export default async function FaqPage({ searchParams }: Props) {
                 <h2 className="text-lg font-semibold text-zinc-900">
                   {draft.title}
                 </h2>
-                <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs text-zinc-600">
-                  {draft.contentRef}
-                </span>
+                {content.source === "control-plane-draft" ? (
+                  <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs text-zinc-600">
+                    {draft.contentRef}
+                  </span>
+                ) : null}
               </div>
-              <p className="mt-2 text-sm text-zinc-500">
-                Target:{" "}
-                <Link className="underline underline-offset-4" href={draft.targetPath}>
-                  <code className="rounded bg-zinc-100 px-1">{draft.targetPath}</code>
-                </Link>
-              </p>
+              {content.source === "control-plane-draft" ? (
+                <p className="mt-2 text-sm text-zinc-500">
+                  Target:{" "}
+                  <Link className="underline underline-offset-4" href={draft.targetPath}>
+                    <code className="rounded bg-zinc-100 px-1">{draft.targetPath}</code>
+                  </Link>
+                </p>
+              ) : null}
 
               <div className="mt-5 space-y-4">
                 {draft.items.map((item) => (

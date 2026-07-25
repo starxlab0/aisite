@@ -22,8 +22,12 @@ const customerNotifications = Array.isArray(persisted.customerNotifications) ? p
 const supportCases = Array.isArray(persisted.supportCases) ? persisted.supportCases : [];
 const seoMetrics = Array.isArray(persisted.seoMetrics) ? persisted.seoMetrics : [];
 const seoImportRuns = Array.isArray(persisted.seoImportRuns) ? persisted.seoImportRuns : [];
+const orderSnapshots = new Map(
+  (Array.isArray(persisted.orderSnapshots) ? persisted.orderSnapshots : []).map((item) => [item.id, item]),
+);
 let seoImportReplay = persisted.seoImportReplay ?? null;
 let seoSyncStatus = persisted.seoSyncStatus ?? null;
+const MAX_ORDER_SNAPSHOTS = 500;
 
 function now() {
   return new Date().toISOString();
@@ -184,9 +188,82 @@ function persist() {
     supportCases,
     seoMetrics,
     seoImportRuns,
+    orderSnapshots: Array.from(orderSnapshots.values())
+      .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))
+      .slice(0, MAX_ORDER_SNAPSHOTS),
     seoImportReplay,
     seoSyncStatus,
   });
+}
+
+function fulfillmentRank(status) {
+  if (status === "delivered") return 4;
+  if (status === "shipped") return 3;
+  if (status === "processing") return 2;
+  return 1;
+}
+
+function mergePaymentStatus(existing, incoming) {
+  if (!existing) return { paymentStatus: incoming.paymentStatus, paymentDetail: incoming.paymentDetail };
+  if (incoming.paymentStatus === "pending" && existing.paymentStatus !== "pending") {
+    return {
+      paymentStatus: existing.paymentStatus,
+      paymentDetail: existing.paymentDetail || incoming.paymentDetail,
+    };
+  }
+  return {
+    paymentStatus: incoming.paymentStatus,
+    paymentDetail: incoming.paymentDetail || existing.paymentDetail,
+  };
+}
+
+function mergeOrderSnapshot(existing, incoming) {
+  const payment = mergePaymentStatus(existing, incoming);
+  const fulfillmentStatus =
+    existing && fulfillmentRank(existing.fulfillmentStatus) > fulfillmentRank(incoming.fulfillmentStatus)
+      ? existing.fulfillmentStatus
+      : incoming.fulfillmentStatus;
+
+  return {
+    ...(existing || incoming),
+    ...incoming,
+    items: Array.isArray(incoming.items) && incoming.items.length ? incoming.items : existing?.items || [],
+    total: incoming.total ?? existing?.total ?? 0,
+    currency: incoming.currency ?? existing?.currency ?? "USD",
+    amountUnit: incoming.amountUnit ?? existing?.amountUnit ?? "major",
+    createdAt: existing?.createdAt || incoming.createdAt,
+    fulfillmentStatus,
+    ...payment,
+    updatedAt: incoming.updatedAt || now(),
+    statusSource: incoming.statusSource ?? existing?.statusSource,
+    statusNote: incoming.statusNote ?? existing?.statusNote ?? null,
+  };
+}
+
+function getOrderSnapshot(id) {
+  const normalized = String(id || "").trim();
+  if (!normalized) return null;
+  return orderSnapshots.get(normalized) || null;
+}
+
+function upsertOrderSnapshot({ order, actor = "system", source = "web" } = {}) {
+  if (!order?.id) return null;
+  const existing = getOrderSnapshot(order.id);
+  const snapshot = mergeOrderSnapshot(existing, {
+    ...order,
+    id: String(order.id),
+  });
+  orderSnapshots.set(snapshot.id, snapshot);
+  persist();
+  try {
+    createEvent({
+      actor,
+      action: "order_snapshot_upsert",
+      target: { type: "order", id: snapshot.id },
+      note: `source=${source} payment=${snapshot.paymentStatus} fulfillment=${snapshot.fulfillmentStatus}`,
+    });
+  } catch {}
+  return snapshot;
 }
 
 function playbookIdForKey(key) {
@@ -1785,6 +1862,8 @@ const {
 
 module.exports = {
   createEvent,
+  getOrderSnapshot,
+  upsertOrderSnapshot,
   deleteEventsByIds,
   listEvents,
   listPlaybooks,

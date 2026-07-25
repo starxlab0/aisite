@@ -60,9 +60,9 @@ export default async function ProductPage({ params, searchParams }: Props) {
     return (
       <div className="mx-auto w-full max-w-3xl px-4 py-14">
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
-          Product not found
+          没找到这款商品
         </h1>
-        <p className="mt-3 text-zinc-600">No product for slug: {slug}</p>
+        <p className="mt-3 text-zinc-600">这款商品可能已下架、改名，或当前链接已失效。</p>
       </div>
     );
   }
@@ -173,8 +173,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
             <p className="mt-3 text-zinc-600">{resolved.content.shortDescription}</p>
           ) : (
             <p className="mt-3 text-zinc-600">
-              {commerce.name} 当前已展示价格、库存状态和基础参数；更完整的使用场景、FAQ
-              与导购内容会随着内容配置继续补充。
+              {commerce.name} 当前优先展示价格、库存、基础参数和购买入口，方便你先快速判断这款商品是否适合自己。
             </p>
           )}
           {resolved.debug?.draftRef ? (
@@ -185,7 +184,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
           ) : null}
         </div>
         <Link className="text-sm underline underline-offset-4" href="/shop">
-          Back to Shop
+          返回商品列表
         </Link>
       </div>
 
@@ -229,7 +228,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
 
           <div className="grid gap-6 lg:grid-cols-3">
             <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-              <p className="text-sm font-medium text-zinc-900">Who It’s For</p>
+              <p className="text-sm font-medium text-zinc-900">更适合谁</p>
               <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
                 {(vm.whoItsFor.length
                   ? vm.whoItsFor
@@ -240,7 +239,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
             </div>
 
             <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-              <p className="text-sm font-medium text-zinc-900">Why It Feels Different</p>
+              <p className="text-sm font-medium text-zinc-900">这款为什么不一样</p>
               <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
                 {(vm.whyItFeelsDifferent.length
                   ? vm.whyItFeelsDifferent
@@ -251,7 +250,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
             </div>
 
             <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-              <p className="text-sm font-medium text-zinc-900">What’s In Box</p>
+              <p className="text-sm font-medium text-zinc-900">包装内含</p>
               <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
                 {(vm.whatsInBox.length
                   ? vm.whatsInBox
@@ -264,7 +263,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
 
           <div className="grid gap-6 lg:grid-cols-2">
             <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-              <p className="text-sm font-medium text-zinc-900">Specs</p>
+              <p className="text-sm font-medium text-zinc-900">产品参数</p>
               <ul className="mt-3 space-y-2 text-sm text-zinc-700">
                 {vm.specs.length ? (
                   vm.specs.map((s) => (
@@ -279,7 +278,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
             </div>
 
             <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-              <p className="text-sm font-medium text-zinc-900">Care</p>
+              <p className="text-sm font-medium text-zinc-900">使用与收纳</p>
               <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
                 {(resolved.content?.careInstructions?.length
                   ? resolved.content.careInstructions
@@ -294,7 +293,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
         <div className="order-1 space-y-5 lg:order-2 lg:sticky lg:top-28 lg:self-start">
           <AiConciergeEntry placement="product" productSlug={slug} />
           <div className="rounded-[2rem] border border-zinc-200 bg-white p-6">
-            <p className="text-sm text-zinc-500">Price / Stock</p>
+            <p className="text-sm text-zinc-500">价格与库存</p>
             <p className="mt-2 text-3xl font-semibold text-zinc-900">
               {formatMoney(vm.price.amount, vm.price.currency)}
             </p>
@@ -372,7 +371,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
 
       <div className="mt-10 grid gap-6 lg:grid-cols-3">
         <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-          <p className="text-sm font-medium text-zinc-900">Who It’s For</p>
+          <p className="text-sm font-medium text-zinc-900">更适合谁</p>
           <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
             {(vm.whoItsFor.length
               ? vm.whoItsFor
@@ -384,7 +383,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
         </div>
 
         <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-          <p className="text-sm font-medium text-zinc-900">Why It Feels Different</p>
+          <p className="text-sm font-medium text-zinc-900">这款为什么不一样</p>
           <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
             {(vm.whyItFeelsDifferent.length
               ? vm.whyItFeelsDifferent
@@ -396,7 +395,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
         </div>
 
         <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-          <p className="text-sm font-medium text-zinc-900">What’s In Box</p>
+          <p className="text-sm font-medium text-zinc-900">包装内含</p>
           <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
             {(vm.whatsInBox.length
               ? vm.whatsInBox
@@ -410,7 +409,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
 
       <div className="mt-10 grid gap-6 lg:grid-cols-2">
         <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-          <p className="text-sm font-medium text-zinc-900">Specs (Medusa)</p>
+          <p className="text-sm font-medium text-zinc-900">产品参数</p>
           <ul className="mt-3 space-y-2 text-sm text-zinc-700">
             {vm.specs.length ? (
               vm.specs.map((s) => (
@@ -424,18 +423,14 @@ export default async function ProductPage({ params, searchParams }: Props) {
           </ul>
         </div>
         <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-          <p className="text-sm font-medium text-zinc-900">FAQ (Sanity)</p>
+          <p className="text-sm font-medium text-zinc-900">购买前常见问题</p>
           <div className="mt-2">
             <Link className="text-xs underline underline-offset-4 text-zinc-600" href="/faq">
-              View full FAQ
+              查看完整 FAQ
             </Link>
           </div>
           {faqDraft ? (
             <div className="mt-4 space-y-4">
-              <p className="text-xs text-zinc-500">
-                Draft:{" "}
-                <code className="rounded bg-zinc-100 px-1">{faqDraft.contentRef}</code>
-              </p>
               {faqDraft.payload.items.slice(0, 6).map((item) => (
                 <div
                   key={item.id}
@@ -451,9 +446,10 @@ export default async function ProductPage({ params, searchParams }: Props) {
               ))}
             </div>
           ) : (
-            <p className="mt-2 text-sm text-zinc-600">
-              当前还没有补充这款商品的专属 FAQ，你可以先查看通用 FAQ、配送说明或直接联系咨询。
-            </p>
+            <div className="mt-2 space-y-3 text-sm text-zinc-600">
+              <p>这款商品暂时还没有单独整理 FAQ，但你仍然可以先完成购买判断。</p>
+              <p>建议先查看通用 FAQ、配送说明和退换政策；如果仍有疑问，可以直接联系支持。</p>
+            </div>
           )}
         </div>
       </div>

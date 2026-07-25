@@ -4,15 +4,8 @@ import {
   updateCartLineItemAction,
 } from "@/features/cart/actions";
 import { getCurrentCart } from "@/features/cart/server";
+import { getDisplayLineTotal } from "@/lib/commerce/cart-logic";
 import { formatMoney } from "@/lib/utils/money";
-
-function getDisplayLineTotal(unitPrice: number, quantity: number, total: number, cartSubtotal: number) {
-  if (total > 0 || cartSubtotal <= 0 || unitPrice <= 0 || quantity <= 0) {
-    return total;
-  }
-
-  return unitPrice * quantity;
-}
 
 export default async function CartPage() {
   const cart = await getCurrentCart();
@@ -23,13 +16,13 @@ export default async function CartPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
         <div>
           <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">购物车</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-900">Cart</h1>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-900">确认购物车</h1>
           <p className="mt-3 text-zinc-600">
             这里已经支持数量调整和删除商品。确认无误后，直接进入结账页完成支付。
           </p>
         </div>
         <Link className="text-sm underline underline-offset-4" href="/shop">
-          Continue shopping
+          继续选购
         </Link>
       </div>
 
@@ -122,23 +115,23 @@ export default async function CartPage() {
 
         <div className="space-y-6">
           <div className="rounded-[2rem] border border-zinc-200 bg-white p-6 lg:sticky lg:top-28">
-            <p className="text-sm font-medium text-zinc-900">Summary</p>
+            <p className="text-sm font-medium text-zinc-900">订单摘要</p>
             <p className="mt-2 text-sm text-zinc-600">{itemCount} 件商品，确认后进入正式结账。</p>
           <dl className="mt-4 space-y-3 text-sm text-zinc-700">
             <div className="flex items-center justify-between">
-              <dt>Subtotal</dt>
+              <dt>商品小计</dt>
               <dd>{formatMoney(cart.subtotal, cart.currency)}</dd>
             </div>
             <div className="flex items-center justify-between">
-              <dt>Shipping</dt>
+              <dt>配送费用</dt>
               <dd>{formatMoney(cart.shippingTotal, cart.currency)}</dd>
             </div>
             <div className="flex items-center justify-between">
-              <dt>Tax</dt>
+              <dt>税费</dt>
               <dd>{formatMoney(cart.taxTotal, cart.currency)}</dd>
             </div>
             <div className="flex items-center justify-between border-t border-zinc-100 pt-3 font-medium text-zinc-900">
-              <dt>Total</dt>
+              <dt>订单总计</dt>
               <dd>{formatMoney(cart.total, cart.currency)}</dd>
             </div>
           </dl>

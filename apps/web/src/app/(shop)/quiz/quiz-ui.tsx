@@ -77,7 +77,6 @@ function pickRecommendations(products: Product[], answer: Answer) {
       score += p.appControl ? 0 : 1;
     }
 
-    // budget match (price is cents)
     if (Number.isFinite(p.price)) {
       if (p.price >= range.min && p.price < range.max) score += 2;
       else score -= 1;
@@ -203,7 +202,6 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
   }, [done, answer]);
 
   useEffect(() => {
-    // quiz page view（用于衡量入口转化）
     track("view", {
       experiment: envClient.aiConciergeExperiment,
       bucket,
@@ -216,7 +214,6 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
 
   useEffect(() => {
     if (!done) return;
-    // 推荐曝光（不污染商品 view；用独立 targetId）
     track("view", {
       experiment: envClient.aiConciergeExperiment,
       bucket,

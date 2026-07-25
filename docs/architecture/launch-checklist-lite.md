@@ -9,6 +9,7 @@
 - `NEXT_PUBLIC_MEDUSA_URL`、`NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY` 已配置
 - `SANITY_API_TOKEN`、`REVALIDATE_SECRET` 已配置
 - 如果要启用增长与邮件：`NEXT_PUBLIC_POSTHOG_KEY`、`NEXT_PUBLIC_POSTHOG_HOST`、`RESEND_API_KEY`、`RESEND_FROM_EMAIL`、`RESEND_REPLY_TO_EMAIL` 已配置
+- `CONTROL_PLANE_URL`、`OPS_BEARER_TOKEN`、`MEDUSA_WEBHOOK_SECRET` 已配置
 
 ## 2. 商品与内容
 
@@ -23,6 +24,7 @@
 - `/cart` 能看到当前购物车内容
 - `/checkout` 能正常读取购物车摘要
 - 如果已启用 Stripe：至少完成一次真实或测试支付闭环
+- 订单页在支付返回后仍能看到待支付或已支付状态
 
 ## 4. Webhook 与刷新
 

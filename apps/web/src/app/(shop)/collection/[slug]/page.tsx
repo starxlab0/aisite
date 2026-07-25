@@ -111,7 +111,7 @@ export default async function CollectionPage({ params, searchParams }: Props) {
           ) : null}
         </div>
         <Link className="text-sm underline underline-offset-4" href="/shop">
-          Back to Shop
+          返回商品列表
         </Link>
       </div>
 
@@ -169,7 +169,7 @@ export default async function CollectionPage({ params, searchParams }: Props) {
 
       {internalLinks.length > 0 ? (
         <div className="mt-8 rounded-xl border border-zinc-200 bg-white p-5">
-          <p className="text-sm font-medium text-zinc-900">Continue Reading</p>
+          <p className="text-sm font-medium text-zinc-900">继续了解</p>
           <div className="mt-3 flex flex-wrap gap-3">
             {internalLinks.map((href) => (
               <Link
