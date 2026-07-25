@@ -27,3 +27,9 @@ npm-debug.log*
 
 # local uploads / temp artifacts
 .uploads/
+
+# generated share/export artifacts
+.trae-html-share-packages/**/*.zip
+
+# medusa admin build output
+apps/medusa/apps/backend/public/
