@@ -14,7 +14,10 @@ export default async function QuizPage({ searchParams }: Props) {
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-14">
       <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Find Your Match</h1>
-      <p className="mt-4 text-zinc-600">选购问答 v1：前端规则推荐 + 埋点 + A/B 分桶（后续可迁移到 Sanity 配置）。</p>
+      <p className="mt-4 text-zinc-600">
+        如果你不想一开始就在商品列表里反复横跳，这里会先按第一次购买、是否偏好 wearable、
+        是否想要 App Control 和预算范围，帮你快速缩小到更接近的几款。
+      </p>
 
       <AiQuiz source={src} sourceProductSlug={product} products={products} />
 
