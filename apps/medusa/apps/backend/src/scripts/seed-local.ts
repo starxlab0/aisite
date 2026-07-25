@@ -1,4 +1,4 @@
-import { MedusaContainer } from "@medusajs/framework";
+import type { MedusaContainer } from "@medusajs/framework";
 import {
   ContainerRegistrationKeys,
   ModuleRegistrationName,
@@ -455,4 +455,3 @@ export default async function seedLocal({
   logger.info(`Publishable API key id: ${publishableApiKey.id}`);
   logger.info(`Region id: ${region.id}`);
 }
-
