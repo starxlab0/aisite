@@ -1,25 +1,34 @@
-# 架构总览
+# 架构文档索引
 
-当前仓库分为三个核心面向：
+当前独立站的核心架构文档如下：
 
-- `apps/web`：正式对外的 storefront，负责内容展示、选购、购物车、结账、订单页与增长埋点。
-- `apps/control-plane`：运营与内容控制面，承接 draft、preview、repo change、signals，以及订单快照与监控能力。
-- `apps/medusa`：商品、库存、价格与履约后端。
+- `overview.md`：架构总览、技术栈、系统边界、版本规划
+- `routing.md`：项目目录、路由树、页面职责、API 路由规划
+- `data-model.md`：Sanity 与 Medusa 数据模型、体验标签体系、前台聚合模型
+- `page-modules.md`：首页、分类页、商品页、专题页、内容页、购物车与结账的模块清单及数据来源
+- `medusa-local-setup.md`：本地运行 Medusa backend、配置数据库、创建 API key 与联调前台的说明
+- `medusa-test-products.md`：Medusa 测试商品字段规范与首批测试商品模板
+- `deployment.md`：Vercel 前台部署、环境变量、CORS 与 webhook 配置说明
+- `launch-checklist-lite.md`：上线当天可直接照着走的短检查单
+- `platformization.md`：第一批平台化代码骨架、目录边界与后续扩展建议
 
-## 当前主链路
+## 阅读顺序建议
 
-1. 用户从首页、collection、guide 或 quiz 进入商品页。
-2. 商品页完成 `add to cart`，在 `/cart` 和 `/checkout` 中继续确认。
-3. 结账优先进入 Stripe，若未完成支付，则订单页通过本地快照 + control-plane order snapshot 恢复状态。
-4. Medusa webhook 会把支付状态继续回写到 storefront 可读取的 snapshot 链路中。
+1. 先读 `overview.md`
+2. 再读 `routing.md`
+3. 再读 `data-model.md`
+4. 最后读 `page-modules.md`
 
-## 状态同步原则
+## 当前用途
 
-订单状态目前采用“多层兜底”：
+这组文档用于：
 
-- checkout 提交时先写 storefront snapshot
-- storefront 再 best-effort 推送到 control-plane `/ops/order-snapshots`
-- order 页优先读取 control-plane snapshot
-- Medusa webhook 到达后继续覆盖最新状态
+- 开发启动前的架构对齐
+- 前端、内容、后端的字段和页面分工
+- 后续由本项目继续推进开发时的基础参考
 
-这样即使支付回跳、webhook 延迟、或前端 session 丢失，也仍然能恢复订单页状态。
+## 后续建议补充文档
+
+- `integration.md`：支付、邮件、分析、对象存储、搜索接入说明
+- `tracking.md`：埋点方案
+- `launch-checklist.md`：上线检查项

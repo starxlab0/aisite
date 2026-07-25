@@ -40,15 +40,11 @@ function runtimeLabel(product: CommerceProduct) {
 }
 
 function waterproofLabel(product: CommerceProduct) {
-  if (!product.waterproof) {
-    return "未标注";
+  if (product.waterproof) {
+    return product.waterproof;
   }
 
-  if (product.waterproof === "none") {
-    return "不支持防水";
-  }
-
-  return product.waterproof;
+  return "未标注";
 }
 
 export function ProductCard({ product, href, eyebrow, compact = false, plain = false }: ProductCardProps) {

@@ -19,7 +19,7 @@ export type Order = {
   amountUnit?: "major" | "minor";
   createdAt: string;
   updatedAt?: string;
-  statusSource?: "checkout" | "medusa_admin" | "medusa_webhook" | "payment_webhook" | "server_snapshot" | "browser_snapshot";
+  statusSource?: "checkout" | "medusa_admin" | "medusa_store" | "medusa_webhook" | "payment_webhook" | "server_snapshot" | "browser_snapshot";
   statusNote?: string | null;
   paymentIssueReason?: "declined" | "timeout" | "customer_abandon" | "action_required" | "capture_pending" | "completed" | "pending_sync" | "provider_error";
   recoveryLane?: "awaiting_result" | "customer_retry" | "customer_action" | "provider_review" | "fulfillment_ready";

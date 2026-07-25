@@ -1,170 +1,283 @@
 "use server";
 
-import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { getCurrentCart } from "@/features/cart/server";
-import { normalizeLineItems } from "@/lib/commerce/checkout";
+import { clearCurrentCart, getOrCreateCurrentCart } from "@/features/cart/server";
+import { persistOrderSnapshot } from "@/features/checkout/session";
+import { derivePaymentIssueReason, derivePaymentRecoveryPlan } from "@/lib/commerce/orders";
 import { upsertOrderSnapshot } from "@/lib/commerce/order-snapshot-store";
+import { placeOrder } from "@/lib/commerce/checkout";
 import { envServer } from "@/lib/env/server";
-import { getStripeClient } from "@/lib/payments/stripe";
-import type { Order } from "@/types/order";
+import { getStripeClient, resolveBaseUrl } from "@/lib/payments/stripe";
 
-const LAST_ORDER_COOKIE = "last_order_id";
+export async function placeOrderAction(formData: FormData) {
+  const email = String(formData.get("email") ?? "").trim();
+  const firstName = String(formData.get("firstName") ?? "").trim();
+  const lastName = String(formData.get("lastName") ?? "").trim();
+  const phone = String(formData.get("phone") ?? "").trim();
+  const address1 = String(formData.get("address1") ?? "").trim();
+  const city = String(formData.get("city") ?? "").trim();
+  const postalCode = String(formData.get("postalCode") ?? "").trim();
 
-type CheckoutFormPayload = {
-  email: string;
-  firstName: string;
-  lastName: string;
-  phone: string;
-  address1: string;
-  city: string;
-  postalCode: string;
-};
+  const cart = await getOrCreateCurrentCart();
+  if (!cart.items.length) {
+    redirect("/cart");
+  }
 
-function readString(formData: FormData, key: string) {
-  return String(formData.get(key) || "").trim();
-}
-
-function buildCheckoutPayload(formData: FormData): CheckoutFormPayload {
-  return {
-    email: readString(formData, "email"),
-    firstName: readString(formData, "firstName"),
-    lastName: readString(formData, "lastName"),
-    phone: readString(formData, "phone"),
-    address1: readString(formData, "address1"),
-    city: readString(formData, "city"),
-    postalCode: readString(formData, "postalCode"),
-  };
-}
-
-async function baseUrl() {
-  const h = await headers();
-  const proto = h.get("x-forwarded-proto") || "http";
-  const host = h.get("x-forwarded-host") || h.get("host") || "localhost:3000";
-  return `${proto}://${host}`;
-}
-
-async function saveOrderSnapshot(order: Order) {
-  await upsertOrderSnapshot(order);
-  const jar = await cookies();
-  jar.set(LAST_ORDER_COOKIE, order.id, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: envServer.nodeEnv === "production",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 14,
+  const order = await placeOrder({
+    cartId: cart.id,
+    email,
+    firstName: firstName || "Guest",
+    lastName: lastName || "Customer",
+    phone,
+    address1: address1 || "Local test address",
+    city: city || "Shanghai",
+    postalCode: postalCode || "200000",
   });
-}
 
-function buildOrderFromCart(cart: Awaited<ReturnType<typeof getCurrentCart>>, form: CheckoutFormPayload): Order {
-  const createdAt = new Date().toISOString();
-  return {
-    id: `order_${Math.random().toString(36).slice(2, 14)}`,
-    email: form.email || null,
+  await persistOrderSnapshot({
+    orderId: order.id,
+    email,
+    cart,
+  });
+  const paymentIssueReason = derivePaymentIssueReason({
+    paymentStatus: order.paymentStatus,
+    paymentDetail: order.paymentDetail ?? "pending",
+  });
+  const recovery = derivePaymentRecoveryPlan({
+    paymentStatus: order.paymentStatus,
+    paymentDetail: order.paymentDetail ?? "pending",
+    paymentIssueReason,
+  });
+  await upsertOrderSnapshot({
+    ...order,
+    items: cart.items.map((item) => ({
+      productId: item.productId,
+      title: item.title ?? "Product",
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      thumbnail: item.thumbnail,
+      productHandle: item.productHandle,
+    })),
     total: cart.total,
     currency: cart.currency,
     amountUnit: "major",
-    paymentStatus: "pending",
-    paymentDetail: "pending",
-    fulfillmentStatus: "unfulfilled",
-    createdAt,
-    updatedAt: createdAt,
-    items: normalizeLineItems(cart.items),
-    shippingAddress: {
-      firstName: form.firstName,
-      lastName: form.lastName,
-      phone: form.phone,
-      address1: form.address1,
-      city: form.city,
-      postalCode: form.postalCode,
-    },
-    paymentProvider: envServer.stripeSecretKey ? "stripe" : "manual",
-  };
+    paymentDetail: order.paymentDetail ?? "pending",
+    paymentIssueReason,
+    updatedAt: new Date().toISOString(),
+    statusSource: "checkout",
+    statusNote: "订单已创建，正在等待支付结果同步。",
+    recoveryLane: recovery.recoveryLane,
+    recoveryOwner: recovery.recoveryOwner,
+    recoveryActions: recovery.recoveryActions,
+  });
+
+  await clearCurrentCart();
+  redirect(`/order/${encodeURIComponent(order.id)}`);
 }
 
-export async function placeOrderAction(formData: FormData) {
-  const cart = await getCurrentCart();
-  if (!cart.items.length) {
-    redirect("/cart");
-  }
+function normalizeCurrency(code: string) {
+  return String(code || "usd").toLowerCase();
+}
 
-  const form = buildCheckoutPayload(formData);
-  const order = buildOrderFromCart(cart, form);
-  await saveOrderSnapshot(order);
-  redirect(`/order/${order.id}`);
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  "bif",
+  "clp",
+  "djf",
+  "gnf",
+  "jpy",
+  "kmf",
+  "krw",
+  "mga",
+  "pyg",
+  "rwf",
+  "ugx",
+  "vnd",
+  "vuv",
+  "xaf",
+  "xof",
+  "xpf",
+]);
+
+function toStripeUnitAmount(amount: number, currency: string) {
+  const normalizedAmount = Number.isFinite(amount) ? amount : 0;
+  if (ZERO_DECIMAL_CURRENCIES.has(currency)) {
+    return Math.max(0, Math.round(normalizedAmount));
+  }
+  return Math.max(0, Math.round(normalizedAmount * 100));
 }
 
 export async function startStripeCheckoutAction(formData: FormData) {
-  const cart = await getCurrentCart();
+  if (!envServer.stripeSecretKey) {
+    throw new Error("Stripe is not configured (missing STRIPE_SECRET_KEY)");
+  }
+
+  const email = String(formData.get("email") ?? "").trim();
+  const firstName = String(formData.get("firstName") ?? "").trim();
+  const lastName = String(formData.get("lastName") ?? "").trim();
+  const phone = String(formData.get("phone") ?? "").trim();
+  const address1 = String(formData.get("address1") ?? "").trim();
+  const city = String(formData.get("city") ?? "").trim();
+  const postalCode = String(formData.get("postalCode") ?? "").trim();
+
+  const cart = await getOrCreateCurrentCart();
   if (!cart.items.length) {
     redirect("/cart");
   }
 
-  const form = buildCheckoutPayload(formData);
-  const order = buildOrderFromCart(cart, form);
-  const origin = await baseUrl();
+  if (!email) {
+    throw new Error("Email is required");
+  }
+
+  const order = await placeOrder({
+    cartId: cart.id,
+    email,
+    firstName: firstName || "Guest",
+    lastName: lastName || "Customer",
+    phone,
+    address1: address1 || "Local test address",
+    city: city || "Shanghai",
+    postalCode: postalCode || "200000",
+  });
+  const orderId = order.id;
+  const now = new Date().toISOString();
+  const currency = normalizeCurrency(cart.currency);
+
+  await persistOrderSnapshot({
+    orderId,
+    email,
+    cart,
+  });
+
+  // 先落一份“待支付订单快照”，支付结果由 Stripe webhook 回写
+  const pendingOrder = {
+    id: orderId,
+    email,
+    items: cart.items.map((item) => ({
+      productId: item.productId,
+      title: item.title ?? "Product",
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      thumbnail: item.thumbnail,
+      productHandle: item.productHandle,
+    })),
+    paymentStatus: "pending" as const,
+    paymentDetail: "pending" as const,
+    fulfillmentStatus: "unfulfilled" as const,
+    total: cart.total,
+    currency: cart.currency,
+    amountUnit: "major" as const,
+    createdAt: now,
+    updatedAt: now,
+    statusSource: "checkout" as const,
+    statusNote: "已创建 Stripe 支付会话，等待用户完成支付。",
+    paymentProvider: "stripe" as const,
+    paymentIssueReason: undefined,
+    recoveryLane: "awaiting_result" as const,
+    recoveryOwner: "customer" as const,
+    recoveryActions: ["complete_payment", "retry_payment"],
+  };
+
+  await upsertOrderSnapshot(pendingOrder);
+
   const stripe = getStripeClient();
+  const baseUrl = resolveBaseUrl();
 
   const session = await stripe.checkout.sessions.create({
     mode: "payment",
-    customer_email: form.email || undefined,
-    client_reference_id: order.id,
-    metadata: {
-      order_id: order.id,
-      source: "checkout",
-    },
-    success_url: `${origin}/order/${order.id}?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${origin}/order/${order.id}?stripe=cancel`,
+    customer_email: email,
+    client_reference_id: orderId,
+    metadata: { order_id: orderId, source: "aisite" },
+    success_url: `${baseUrl}/order/${encodeURIComponent(orderId)}?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${baseUrl}/order/${encodeURIComponent(orderId)}?stripe=cancel`,
     line_items: cart.items.map((item) => ({
       quantity: item.quantity,
       price_data: {
-        currency: cart.currency.toLowerCase(),
-        unit_amount: Math.round(item.unitPrice * 100),
+        currency,
+        unit_amount: toStripeUnitAmount(item.unitPrice, currency),
         product_data: {
-          name: item.title || item.productHandle || item.productId,
+          name: item.title ?? item.productHandle ?? item.productId ?? "Item",
+          metadata: {
+            product_handle: item.productHandle ?? "",
+            variant_id: item.variantId ?? "",
+          },
         },
       },
     })),
+    // 在 checkout 表单里已经收集了地址，但也可以选择让 Stripe 再收集一次（可选）
+    // shipping_address_collection: { allowed_countries: ["CN"] },
   });
 
-  const withStripe: Order = {
-    ...order,
-    paymentProvider: "stripe",
+  await upsertOrderSnapshot({
+    ...pendingOrder,
+    // 注意：当前 Order snapshot 类型是最小结构（不含地址/收货人），收货信息保存在 checkout session cookie 里。
     paymentSessionId: session.id,
-    paymentUrl: session.url || undefined,
-  };
-  await saveOrderSnapshot(withStripe);
-  redirect(session.url || `/order/${order.id}`);
+    paymentUrl: session.url ?? null,
+    updatedAt: new Date().toISOString(),
+  });
+
+  if (!session.url) {
+    throw new Error("Stripe checkout session has no url");
+  }
+
+  redirect(session.url);
 }
 
 export async function resumeStripeCheckoutAction(formData: FormData) {
-  const orderId = readString(formData, "orderId");
-  if (!orderId) {
-    redirect("/cart");
+  if (!envServer.stripeSecretKey) {
+    throw new Error("Stripe is not configured (missing STRIPE_SECRET_KEY)");
   }
 
-  const cart = await getCurrentCart();
-  const origin = await baseUrl();
+  const orderId = String(formData.get("orderId") ?? "").trim();
+  if (!orderId) throw new Error("Missing orderId");
+
+  const cart = await getOrCreateCurrentCart();
+  if (!cart.items.length) {
+    redirect("/shop");
+  }
+
   const stripe = getStripeClient();
+  const baseUrl = resolveBaseUrl();
+  const currency = normalizeCurrency(cart.currency);
+
   const session = await stripe.checkout.sessions.create({
     mode: "payment",
     client_reference_id: orderId,
-    metadata: {
-      order_id: orderId,
-      source: "resume_payment",
-    },
-    success_url: `${origin}/order/${orderId}?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${origin}/order/${orderId}?stripe=cancel`,
+    metadata: { order_id: orderId, source: "aisite", retry: "1" },
+    success_url: `${baseUrl}/order/${encodeURIComponent(orderId)}?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${baseUrl}/order/${encodeURIComponent(orderId)}?stripe=cancel`,
     line_items: cart.items.map((item) => ({
       quantity: item.quantity,
       price_data: {
-        currency: cart.currency.toLowerCase(),
-        unit_amount: Math.round(item.unitPrice * 100),
+        currency,
+        unit_amount: toStripeUnitAmount(item.unitPrice, currency),
         product_data: {
-          name: item.title || item.productHandle || item.productId,
+          name: item.title ?? item.productHandle ?? item.productId ?? "Item",
         },
       },
     })),
   });
-  redirect(session.url || `/order/${orderId}`);
+
+  if (!session.url) throw new Error("Stripe checkout session has no url");
+
+  // 这里只做最小回写：记录 session id，支付结果仍由 webhook 覆盖
+  await upsertOrderSnapshot({
+    id: orderId,
+    email: "",
+    items: [],
+    paymentStatus: "pending",
+    paymentDetail: "pending",
+    fulfillmentStatus: "unfulfilled",
+    total: cart.total,
+    currency: cart.currency,
+    amountUnit: "major",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    statusSource: "checkout",
+    statusNote: "用户重新发起支付会话。",
+    paymentProvider: "stripe",
+    paymentSessionId: session.id,
+    paymentUrl: session.url,
+  });
+
+  redirect(session.url);
 }
