@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { envClient } from "@/lib/env/client";
+import { buildLocalePath, getLocaleKeyFromPathname } from "@/lib/site/locale-routing";
+import { getSiteConfigForLocale } from "@/lib/site/config";
 import { getExperimentBucket } from "@/lib/experiments/ab";
 import { writeAttributionContext } from "@/components/signals/attribution";
 
@@ -33,9 +36,14 @@ function track(eventType: "view" | "cta", payload: Record<string, unknown>) {
 }
 
 export function AiConciergeEntry({ placement, productSlug }: Props) {
+  const pathname = usePathname();
   const enabled = envClient.aiConciergeEnabled;
   const bucket = useMemo(() => (enabled ? getExperimentBucket(envClient.aiConciergeExperiment) : "B"), [enabled]);
   const shouldShow = enabled && bucket === "A";
+  const localeKey = getLocaleKeyFromPathname(pathname || "/");
+  const site = getSiteConfigForLocale(localeKey);
+  const quizHref = buildLocalePath(`/quiz?src=${placement}${productSlug ? `&product=${encodeURIComponent(productSlug)}` : ""}`, localeKey);
+  const shopHref = buildLocalePath("/shop", localeKey);
 
   useEffect(() => {
     if (!shouldShow) return;
@@ -49,7 +57,7 @@ export function AiConciergeEntry({ placement, productSlug }: Props) {
     });
   }, [shouldShow, bucket, placement, productSlug]);
 
-  if (!shouldShow) return null;
+  if (!shouldShow || !site.site.features.quiz) return null;
 
   return (
     <div className="rounded-2xl border border-zinc-200 bg-white p-5">
@@ -58,7 +66,7 @@ export function AiConciergeEntry({ placement, productSlug }: Props) {
       <div className="mt-4 flex flex-wrap items-center gap-3 text-sm">
         <Link
           className="inline-flex h-10 items-center justify-center rounded-md bg-zinc-900 px-4 text-white hover:bg-zinc-800"
-          href={`/quiz?src=${placement}${productSlug ? `&product=${encodeURIComponent(productSlug)}` : ""}`}
+          href={quizHref}
           onClick={() => {
             writeAttributionContext({
               src: "ai_concierge",
@@ -72,7 +80,7 @@ export function AiConciergeEntry({ placement, productSlug }: Props) {
         >
           开始问答
         </Link>
-        <Link className="underline underline-offset-4 text-zinc-700" href="/shop">
+        <Link className="underline underline-offset-4 text-zinc-700" href={shopHref}>
           先逛逛
         </Link>
       </div>

@@ -17,4 +17,5 @@ export const envServer = {
   posthogHost: process.env.NEXT_PUBLIC_POSTHOG_HOST || process.env.POSTHOG_HOST,
   stripeSecretKey: process.env.STRIPE_SECRET_KEY,
   stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+  siteUrlsBySiteKeyJson: process.env.SITE_URLS_BY_SITE_KEY,
 };

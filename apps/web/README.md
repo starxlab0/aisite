@@ -20,6 +20,30 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Multi-site deploy
+
+This app now supports the "same codebase, separate deployments per site" model.
+
+See:
+
+- `docs/multi-site-deploy.md`
+- `docs/deploy-env-template.md`
+- `docs/env.cn-store.example`
+- `docs/env.us-store.example`
+- `docs/env.jp-store.example`
+
+Core deployment environment variables:
+
+```bash
+SITE_TENANT_KEY=xiao
+SITE_BRAND_KEY=brand
+SITE_KEY=cn-store
+SITE_DEFAULT_LOCALE=en
+NEXT_PUBLIC_SITE_URL=https://cn.example.com
+SITE_BASE_URL=https://cn.example.com
+SITE_URL=https://cn.example.com
+```
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

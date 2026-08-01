@@ -19,12 +19,17 @@ const {
 const {
   createPreviewToken,
   createEvent,
+  createChangeRequest,
   createRepoChange,
   deleteEventsByIds,
+  getChangeRequest,
+  getRepoChange,
   listPlaybooks,
+  listChangeRequests,
   getPlaybook,
   applyPlaybook,
   transitionPlaybookApplication,
+  transitionChangeRequest,
   seoOps,
   getOpsDraft: getDraft,
   listEvents,
@@ -140,6 +145,87 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
     return true;
   }
 
+  if (url.pathname === "/ops/change-requests" && req.method === "GET") {
+    const auth = getOpsAuthContext(req);
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const items = listChangeRequests({
+      status: url.searchParams.get("status") || undefined,
+      lane: url.searchParams.get("lane") || undefined,
+      limit: Number(url.searchParams.get("limit") || 50),
+    });
+    sendJson(res, 200, okEnvelope({ items, total: items.length }, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname === "/ops/change-requests" && req.method === "POST") {
+    const auth = requireOpsCapability(req, "manage_content");
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const body = (await readJsonBody(req)) ?? {};
+    const item = createChangeRequest({
+      ...body,
+      actor,
+    });
+    createEvent({
+      actor,
+      action: "change_request_create",
+      target: body?.plan?.targetType && body?.plan?.targetId ? { type: body.plan.targetType, id: body.plan.targetId } : undefined,
+      note: `change request ${item.id} created`,
+    });
+    sendJson(res, 200, okEnvelope({ changeRequest: item }, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname.startsWith("/ops/change-requests/") && !url.pathname.endsWith("/transition") && req.method === "GET") {
+    const auth = getOpsAuthContext(req);
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const id = decodeURIComponent(url.pathname.split("/").slice(-1)[0] || "");
+    const item = getChangeRequest(id);
+    if (!item) {
+      sendJson(res, 404, errorEnvelope("Change request not found", { cmsAdapter }));
+      return true;
+    }
+    sendJson(res, 200, okEnvelope({ changeRequest: item }, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname.startsWith("/ops/change-requests/") && url.pathname.endsWith("/transition") && req.method === "POST") {
+    const auth = requireOpsCapability(req, "manage_content");
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const id = url.pathname.split("/").slice(-2)[0];
+    const body = (await readJsonBody(req)) ?? {};
+    const nextStatus = String(body.status || "").trim();
+    const note = String(body.note || "").trim();
+    if (!nextStatus) {
+      sendJson(res, 400, errorEnvelope("Change request transition requires status", { cmsAdapter }));
+      return true;
+    }
+    const item = transitionChangeRequest({ id, actor, nextStatus, note, patch: body.patch });
+    if (!item) {
+      sendJson(res, 404, errorEnvelope("Change request not found", { cmsAdapter }));
+      return true;
+    }
+    createEvent({
+      actor,
+      action: "change_request_transition",
+      target: item?.plan?.targetType && item?.plan?.targetId ? { type: item.plan.targetType, id: item.plan.targetId } : undefined,
+      note: `change request ${item.id} -> ${item.status}${note ? ` · ${note}` : ""}`,
+    });
+    sendJson(res, 200, okEnvelope({ changeRequest: item }, { cmsAdapter }));
+    return true;
+  }
+
   if (url.pathname === "/ops/repo-changes" && req.method === "GET") {
     const status = url.searchParams.get("status") || undefined;
     const targetType = url.searchParams.get("targetType") || undefined;
@@ -147,6 +233,59 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
     const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit") || 10)));
     const items = listRepoChanges({ status, targetType, targetId }).slice(0, limit);
     sendJson(res, 200, okEnvelope({ items, total: items.length }, { cmsAdapter }));
+    return true;
+  }
+
+  if (url.pathname === "/ops/repo-changes" && req.method === "POST") {
+    const auth = requireOpsCapability(req, "publish_content");
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const body = (await readJsonBody(req)) ?? {};
+    const change = createRepoChange({
+      actor,
+      kind: body.kind || "site_feature_toggle",
+      title: body.title || "Create repo change",
+      summary: body.summary || "",
+      trigger: body.trigger || "manual",
+      branchName: body.branchName || null,
+      targetType: body.targetType || null,
+      targetId: body.targetId || null,
+      siteConfigChange: body.siteConfigChange || null,
+      prDraft: body.prDraft || null,
+      linkedChangeRequestId: body.linkedChangeRequestId || null,
+    });
+    createEvent({
+      actor,
+      action: "repo_change_create",
+      target: change.targetType && change.targetId ? { type: change.targetType, id: change.targetId } : undefined,
+      note: `repo change ${change.id} created`,
+    });
+    sendJson(res, 200, okEnvelope({ repoChange: change }, { cmsAdapter }));
+    return true;
+  }
+
+  if (
+    url.pathname.startsWith("/ops/repo-changes/") &&
+    !url.pathname.endsWith("/transition") &&
+    !url.pathname.endsWith("/sync") &&
+    !url.pathname.endsWith("/open-pr") &&
+    !url.pathname.endsWith("/revert-pr") &&
+    req.method === "GET"
+  ) {
+    const auth = getOpsAuthContext(req);
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+    const id = decodeURIComponent(url.pathname.split("/").slice(-1)[0] || "");
+    const repoChange = getRepoChange(id);
+    if (!repoChange) {
+      sendJson(res, 404, errorEnvelope("Repo change not found", { cmsAdapter }));
+      return true;
+    }
+    sendJson(res, 200, okEnvelope({ repoChange }, { cmsAdapter }));
     return true;
   }
 
@@ -586,6 +725,31 @@ async function handleOpsRoute(req, res, url, cmsAdapter) {
     }
 
     sendJson(res, 200, okEnvelope({ draft: updated }, { cmsAdapter }));
+    return true;
+  }
+
+  if (
+    url.pathname.startsWith("/ops/drafts/") &&
+    !url.pathname.endsWith("/submit") &&
+    !url.pathname.endsWith("/review") &&
+    !url.pathname.endsWith("/publish") &&
+    !url.pathname.endsWith("/preview") &&
+    req.method === "GET"
+  ) {
+    const auth = getOpsAuthContext(req);
+    if (!auth.ok) {
+      sendJson(res, auth.statusCode, errorEnvelope(auth.message, { cmsAdapter }));
+      return true;
+    }
+
+    const draftId = url.pathname.split("/").pop();
+    const draft = getOpsDraft(draftId);
+    if (!draft) {
+      sendJson(res, 404, errorEnvelope("Draft not found", { cmsAdapter }));
+      return true;
+    }
+
+    sendJson(res, 200, okEnvelope({ draft }, { cmsAdapter }));
     return true;
   }
 

@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "type": "productContent",
+      "id": "productContent.kokocang-x",
+      "siteKeys": ["cn-store", "us-store"]
+    },
+    {
+      "type": "collectionPage",
+      "id": "collectionPage.first-time",
+      "siteKeys": ["us-store"]
+    },
+    {
+      "type": "guideArticle",
+      "id": "guideArticle.how-to-choose",
+      "siteKeys": ["cn-store"]
+    },
+    {
+      "type": "faqItem",
+      "id": "faqItem.product.kokocang-x.1",
+      "siteKeys": ["cn-store", "jp-store"]
+    }
+  ]
+}
+

@@ -1,65 +1,46 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { ProductCard } from "@/components/commerce/ProductCard";
 import { listProducts } from "@/lib/commerce/products";
-import { getActiveSiteConfig } from "@/lib/site/config";
+import { buildSeoMetadata } from "@/lib/seo/metadata";
+import { getSiteConfigForLocale, isFeaturePathEnabled } from "@/lib/site/config";
+import { getLocalizedCopy } from "@/lib/site/copy";
+import { buildLocalePath } from "@/lib/site/locale-routing";
+import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
 
-const collectionHighlights = [
-  {
-    title: "第一次选购",
-    summary: "从入门友好、静音度和使用场景开始，快速缩小范围。",
-    href: "/collection/first-time",
-  },
-  {
-    title: "可穿戴与远程控制",
-    summary: "适合异地互动、App 控制和更灵活的解放双手体验。",
-    href: "/collection/wearable",
-  },
-  {
-    title: "双重刺激",
-    summary: "适合想要更强反馈、更完整包裹感的用户。",
-    href: "/collection/dual-stimulation",
-  },
-];
+function localizeMerchText<T extends { locales?: Record<string, Partial<T>> }>(value: T, localeKey: "en" | "zh") {
+  const localized = value.locales?.[localeKey] ?? {};
+  return { ...value, ...localized };
+}
 
-const trustBlocks = [
-  {
-    title: "隐私包装",
-    copy: "默认低调包装与私密账单描述，减少收货顾虑。",
-  },
-  {
-    title: "48 小时内发货",
-    copy: "常规现货订单 48 小时内发出，支持物流跟踪。",
-  },
-  {
-    title: "售后支持",
-    copy: "购买前后都可以从 FAQ、客服邮箱和帮助页获得支持。",
-  },
-];
+export async function generateMetadata(): Promise<Metadata> {
+  const localeKey = await getRequestLocaleKey();
+  const site = getSiteConfigForLocale(localeKey);
+  const copy = getLocalizedCopy(localeKey).home;
 
-const guidanceSteps = [
-  {
-    title: "先看自己属于哪类场景",
-    copy: "第一次购买、想要更安静低调、想要 wearable，还是更在意 App Control。先明确场景，比先看参数更容易缩小范围。",
-  },
-  {
-    title: "再看预算和使用门槛",
-    copy: "如果你希望第一次就买得轻松，优先看操作复杂度、静音度和是否适合新手，而不只是刺激强度。",
-  },
-  {
-    title: "最后再进入商品页比较",
-    copy: "当方向已经清楚，再去比较价格、库存、配送、FAQ 和售后说明，支付前的犹豫会少很多。",
-  },
-];
-
-const audienceBlocks = [
-  "第一次购买但不想在信息里迷路的人",
-  "重视安静、隐私包装和更低负担体验的人",
-  "想看 App Control、异地互动或 wearable 路线的人",
-];
+  return buildSeoMetadata({
+    title: site.brand.name,
+    description: copy.heroDescription,
+    path: "/",
+    openGraphType: "website",
+    siteKeys: ["cn-store", "us-store", "jp-store"],
+  });
+}
 
 export default async function HomePage() {
-  const site = getActiveSiteConfig();
-  const featuredProducts = (await listProducts()).slice(0, 3);
+  const localeKey = await getRequestLocaleKey();
+  const site = getSiteConfigForLocale(localeKey);
+  const copy = getLocalizedCopy(localeKey).home;
+  const products = await listProducts();
+  const featuredProducts = site.site.merchandising.homeFeaturedProductSlugs
+    .map((slug) => products.find((product) => product.slug === slug))
+    .filter((product): product is (typeof products)[number] => Boolean(product))
+    .slice(0, 3);
+  const fallbackFeaturedProducts =
+    featuredProducts.length > 0 ? featuredProducts : products.slice(0, 3);
+  const collectionCards = site.site.merchandising.homeCollectionCards
+    .filter((item) => isFeaturePathEnabled(item.href, localeKey))
+    .map((item) => localizeMerchText(item, localeKey));
 
   return (
     <div className="bg-zinc-50">
@@ -69,50 +50,47 @@ export default async function HomePage() {
             {site.brand.name}
           </p>
           <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-zinc-900 md:text-6xl">
-            更会推荐、也更容易下单的私密好物商店。
+            {copy.heroTitle}
           </h1>
           <p className="max-w-2xl text-base leading-7 text-zinc-600">
-            从入门推荐、场景筛选到正式下单与售后支持，把“想试试”变成真正能放心购买。
-            适合第一次选购、想要更低调体验，或需要 App / 异地互动的用户。
+            {copy.heroDescription}
           </p>
           <div className="flex flex-col gap-3 sm:flex-row">
             <Link
               className="inline-flex h-12 items-center justify-center rounded-full bg-zinc-900 px-6 text-sm font-medium text-white hover:bg-zinc-800"
-              href="/shop"
+              href={buildLocalePath("/shop", localeKey)}
             >
-              进入商店
+              {copy.primaryCta}
             </Link>
-            <Link
-              className="inline-flex h-12 items-center justify-center rounded-full border border-zinc-300 px-6 text-sm font-medium text-zinc-900 hover:bg-white"
-              href="/quiz"
-            >
-              先做选购问答
-            </Link>
+            {site.site.features.quiz ? (
+              <Link
+                className="inline-flex h-12 items-center justify-center rounded-full border border-zinc-300 px-6 text-sm font-medium text-zinc-900 hover:bg-white"
+                href={buildLocalePath("/quiz", localeKey)}
+              >
+                {copy.secondaryCta}
+              </Link>
+            ) : null}
           </div>
           <div className="grid gap-4 pt-2 sm:grid-cols-3">
             <div className="rounded-2xl border border-zinc-200 bg-white p-4">
               <p className="text-2xl font-semibold text-zinc-900">3+</p>
-              <p className="mt-1 text-sm text-zinc-600">已上线可售商品</p>
+              <p className="mt-1 text-sm text-zinc-600">{copy.stats[0]}</p>
             </div>
             <div className="rounded-2xl border border-zinc-200 bg-white p-4">
               <p className="text-2xl font-semibold text-zinc-900">48h</p>
-              <p className="mt-1 text-sm text-zinc-600">常规现货发货时效</p>
+              <p className="mt-1 text-sm text-zinc-600">{copy.stats[1]}</p>
             </div>
             <div className="rounded-2xl border border-zinc-200 bg-white p-4">
               <p className="text-2xl font-semibold text-zinc-900">1 对 1</p>
-              <p className="mt-1 text-sm text-zinc-600">选购与售后支持</p>
+              <p className="mt-1 text-sm text-zinc-600">{copy.stats[2]}</p>
             </div>
           </div>
         </div>
 
         <div className="rounded-[2rem] border border-zinc-200 bg-white p-6 shadow-sm">
-          <p className="text-sm font-medium text-zinc-900">为什么先从这里开始选</p>
+          <p className="text-sm font-medium text-zinc-900">{copy.whyTitle}</p>
           <div className="mt-6 space-y-4">
-            {[
-              "按场景选：第一次入门、异地互动、可穿戴、双重刺激",
-              "按体验选：静音度、强度、新手友好度、是否支持 App",
-              "购买前先看 FAQ、配送、退换说明，减少支付前犹豫",
-            ].map((item) => (
+            {copy.whyItems.map((item) => (
               <div
                 key={item}
                 className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-4 text-sm text-zinc-700"
@@ -122,17 +100,17 @@ export default async function HomePage() {
             ))}
           </div>
           <div className="mt-6 flex flex-wrap gap-3 text-sm text-zinc-600">
-            <Link className="underline underline-offset-4" href="/shipping">
-              配送说明
+            <Link className="underline underline-offset-4" href={buildLocalePath("/shipping", localeKey)}>
+              {copy.links.shipping}
             </Link>
-            <Link className="underline underline-offset-4" href="/returns">
-              退换政策
+            <Link className="underline underline-offset-4" href={buildLocalePath("/returns", localeKey)}>
+              {copy.links.returns}
             </Link>
-            <Link className="underline underline-offset-4" href="/faq">
-              常见问题
+            <Link className="underline underline-offset-4" href={buildLocalePath("/faq", localeKey)}>
+              {copy.links.faq}
             </Link>
-            <Link className="underline underline-offset-4" href="/contact">
-              联系支持
+            <Link className="underline underline-offset-4" href={buildLocalePath("/contact", localeKey)}>
+              {copy.links.contact}
             </Link>
           </div>
         </div>
@@ -141,22 +119,23 @@ export default async function HomePage() {
       <section className="mx-auto w-full max-w-6xl px-4 py-10">
         <div className="flex items-end justify-between gap-4">
           <div>
-            <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">精选推荐</p>
+            <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">{copy.featuredSectionEyebrow}</p>
             <h2 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-900">
-              先从最容易成交的商品开始
+              {copy.featuredSectionTitle}
             </h2>
           </div>
-          <Link className="text-sm text-zinc-700 underline underline-offset-4" href="/shop">
-            查看全部商品
+          <Link className="text-sm text-zinc-700 underline underline-offset-4" href={buildLocalePath("/shop", localeKey)}>
+            {copy.featuredSectionCta}
           </Link>
         </div>
 
         <div className="mt-8 grid gap-5 lg:grid-cols-3">
-          {featuredProducts.map((product, index) => (
+          {fallbackFeaturedProducts.map((product, index) => (
             <ProductCard
               key={product.id}
               product={product}
-              eyebrow={index === 0 ? "热销推荐" : index === 1 ? "入门友好" : "高讨论度"}
+              eyebrow={copy.featuredEyebrows[index] ?? copy.featuredEyebrows[0]}
+              href={buildLocalePath(`/product/${product.slug}`, localeKey)}
             />
           ))}
         </div>
@@ -165,22 +144,22 @@ export default async function HomePage() {
       <section className="mx-auto w-full max-w-6xl px-4 py-10">
         <div className="flex items-end justify-between gap-4">
           <div>
-            <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">按需求进入</p>
+            <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">{copy.collectionsEyebrow}</p>
             <h2 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-900">
-              别让用户在首页停太久
+              {copy.collectionsTitle}
             </h2>
           </div>
         </div>
         <div className="mt-8 grid gap-5 md:grid-cols-3">
-          {collectionHighlights.map((item) => (
+          {collectionCards.map((item) => (
             <Link
               key={item.href}
-              href={item.href}
+              href={buildLocalePath(item.href, localeKey)}
               className="rounded-3xl border border-zinc-200 bg-white p-6 transition hover:border-zinc-300 hover:shadow-sm"
             >
               <p className="text-lg font-semibold text-zinc-900">{item.title}</p>
               <p className="mt-3 text-sm leading-6 text-zinc-600">{item.summary}</p>
-              <p className="mt-6 text-sm text-zinc-900">去看这类商品 →</p>
+              <p className="mt-6 text-sm text-zinc-900">{copy.collectionCardCta}</p>
             </Link>
           ))}
         </div>
@@ -189,12 +168,12 @@ export default async function HomePage() {
       <section className="mx-auto w-full max-w-6xl px-4 py-10">
         <div className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
           <div className="rounded-[2rem] border border-zinc-200 bg-white p-6 md:p-8">
-            <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">怎么开始选</p>
+            <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">{copy.guidanceEyebrow}</p>
             <h2 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-900">
-              别一开始就被参数拖住
+              {copy.guidanceTitle}
             </h2>
             <div className="mt-8 space-y-4">
-              {guidanceSteps.map((item, index) => (
+              {copy.guidanceSteps.map((item, index) => (
                 <div key={item.title} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5">
                   <p className="text-sm font-medium text-zinc-900">
                     {index + 1}. {item.title}
@@ -206,28 +185,31 @@ export default async function HomePage() {
           </div>
 
           <div className="rounded-[2rem] border border-zinc-200 bg-white p-6 md:p-8">
-            <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">更适合谁</p>
+            <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">{copy.audienceEyebrow}</p>
             <h2 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-900">
-              这不是一个只会堆商品的首页
+              {copy.audienceTitle}
             </h2>
             <p className="mt-4 text-sm leading-7 text-zinc-600">
-              我们更希望把首页做成一个“先理解自己，再开始看货”的入口，所以会优先把用户带到适合的合集、
-              问答和商品页，而不是让人先在大量陌生名词里反复跳转。
+              {copy.audienceDescription}
             </p>
             <div className="mt-6 space-y-3">
-              {audienceBlocks.map((item) => (
+              {copy.audienceBlocks.map((item) => (
                 <div key={item} className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-4 text-sm text-zinc-700">
                   {item}
                 </div>
               ))}
             </div>
             <div className="mt-6 flex flex-wrap gap-3 text-sm">
-              <Link className="underline underline-offset-4" href="/quiz">
-                直接开始问答
-              </Link>
-              <Link className="underline underline-offset-4" href="/guides">
-                先看导购内容
-              </Link>
+              {site.site.features.quiz ? (
+                <Link className="underline underline-offset-4" href={buildLocalePath("/quiz", localeKey)}>
+                  {copy.audiencePrimaryCta}
+                </Link>
+              ) : null}
+              {site.site.features.guides ? (
+                <Link className="underline underline-offset-4" href={buildLocalePath("/guides", localeKey)}>
+                  {copy.audienceSecondaryCta}
+                </Link>
+              ) : null}
             </div>
           </div>
         </div>
@@ -237,20 +219,20 @@ export default async function HomePage() {
         <div className="rounded-[2rem] border border-zinc-200 bg-white p-6 md:p-8">
           <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
             <div>
-              <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">放心购买</p>
+              <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">{copy.trustEyebrow}</p>
               <h2 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-900">
-                让“想买”顺利走到“下单”
+                {copy.trustTitle}
               </h2>
             </div>
             <Link
               className="inline-flex h-11 items-center justify-center rounded-full bg-zinc-900 px-5 text-sm font-medium text-white hover:bg-zinc-800"
-              href="/checkout"
+              href={buildLocalePath("/checkout", localeKey)}
             >
-              直接去结账
+              {copy.trustPrimaryCta}
             </Link>
           </div>
           <div className="mt-8 grid gap-4 md:grid-cols-3">
-            {trustBlocks.map((item) => (
+            {copy.trustBlocks.map((item) => (
               <div key={item.title} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5">
                 <p className="text-base font-semibold text-zinc-900">{item.title}</p>
                 <p className="mt-2 text-sm leading-6 text-zinc-600">{item.copy}</p>

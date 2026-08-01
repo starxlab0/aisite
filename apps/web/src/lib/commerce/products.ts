@@ -1,6 +1,8 @@
 import type { CommerceProduct } from "@/types/product";
+import { parseSiteKeysValue } from "@/lib/commerce/site-availability";
 import { getCommerceMode, getMedusaBaseUrl, medusaFetch } from "@/lib/commerce/http";
 import { mockProducts } from "@/lib/commerce/mock";
+import { filterBySiteScope, getCurrentSiteKey, matchesSiteScope } from "@/lib/content/site-scope";
 
 type MedusaProductResponse = {
   products: Array<{
@@ -54,11 +56,13 @@ function resolvePrice(
 
 function mapMedusaProduct(p: MedusaProductResponse["products"][number]): CommerceProduct {
   const md = (p.metadata ?? {}) as Record<string, any>;
+  const siteKeys = parseSiteKeysValue(md.siteKeys);
   const priceInfo = resolvePrice(p, md);
   return {
     id: p.id,
     defaultVariantId: p.variants?.[0]?.id,
     slug: p.handle,
+    siteKeys,
     name: p.title,
     status: (p.status === "draft" ? "draft" : "published"),
     brand: String(md.brand ?? "Brand"),
@@ -106,7 +110,8 @@ function withStorePriceContext(path: string) {
 }
 
 export async function listProducts(): Promise<CommerceProduct[]> {
-  if (getCommerceMode() === "mock") return mockProducts;
+  const siteKey = getCurrentSiteKey();
+  if (getCommerceMode() === "mock") return filterBySiteScope(mockProducts, siteKey);
   // 默认要求 Medusa 可用；如需 mock，请设置 NEXT_PUBLIC_COMMERCE_MODE=mock
   if (!getMedusaBaseUrl()) {
     throw new Error("Medusa commerce is enabled but NEXT_PUBLIC_MEDUSA_URL is not set");
@@ -114,11 +119,22 @@ export async function listProducts(): Promise<CommerceProduct[]> {
   const data = await medusaFetch<MedusaProductResponse>(
     withStorePriceContext("/store/products"),
   );
-  return data.products.map(mapMedusaProduct);
+  return filterBySiteScope(data.products.map(mapMedusaProduct), siteKey);
 }
 
 export async function getProductBySlug(slug: string): Promise<CommerceProduct | null> {
-  if (getCommerceMode() === "mock") return mockProducts.find((p) => p.slug === slug) ?? null;
+  const siteKey = getCurrentSiteKey();
+  return getProductBySlugForSite(slug, siteKey);
+}
+
+export async function getProductBySlugForSite(
+  slug: string,
+  siteKey: string,
+): Promise<CommerceProduct | null> {
+  if (getCommerceMode() === "mock") {
+    const product = mockProducts.find((p) => p.slug === slug) ?? null;
+    return product && matchesSiteScope(product, siteKey) ? product : null;
+  }
   if (!getMedusaBaseUrl()) {
     throw new Error("Medusa commerce is enabled but NEXT_PUBLIC_MEDUSA_URL is not set");
   }
@@ -126,5 +142,6 @@ export async function getProductBySlug(slug: string): Promise<CommerceProduct | 
     withStorePriceContext(`/store/products?handle=${encodeURIComponent(slug)}`),
   );
   const p = data.products?.[0];
-  return p ? mapMedusaProduct(p) : null;
+  const product = p ? mapMedusaProduct(p) : null;
+  return product && matchesSiteScope(product, siteKey) ? product : null;
 }

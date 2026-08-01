@@ -160,6 +160,14 @@ function generateProductRewriteDraft({ targetId, recommendation } = {}) {
         "收纳袋或基础包装配件",
         "快速上手说明",
       ],
+      locales: {
+        en: {
+          seo: {},
+        },
+        zh: {
+          seo: {},
+        },
+      },
     },
     authoringNotes: purchaseMode
       ? purchaseAuthoringNotes(recommendation)

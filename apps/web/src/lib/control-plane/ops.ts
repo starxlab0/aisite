@@ -1,6 +1,8 @@
 import "server-only";
 
+import { shouldAutoScopeGeneratedDraft } from "@/lib/control-plane/generate-draft-scope";
 import { envServer } from "@/lib/env/server";
+import { getActiveSiteContext } from "@/lib/site/config";
 
 type OpsEnvelope<T> = {
   service: "control-plane";
@@ -277,7 +279,13 @@ export type RepoChangeRecord = {
   revertCommitSha?: string | null;
   linkedDraftId?: string | null;
   linkedRecommendationId?: string | null;
+  linkedChangeRequestId?: string | null;
   trigger?: string | null;
+  siteConfigChange?: Record<string, unknown> | null;
+  prDraft?: {
+    title?: string | null;
+    checklist?: string[] | null;
+  } | null;
   transitions?: Array<{
     at: string;
     actor: string;
@@ -304,6 +312,48 @@ export type AutoActionPolicy = {
   };
 };
 
+export type OpsChangeRequest = {
+  id: string;
+  status: string;
+  title: string;
+  prompt: string;
+  lane: string;
+  label: string;
+  href: string;
+  query?: string | null;
+  summary: string;
+  impact: string[];
+  nextStep: string;
+  plan?: {
+    kind: string;
+    targetType?: string;
+    targetId?: string;
+    sites?: string[];
+    fields?: Record<string, unknown>;
+    affectedPaths: string[];
+    risks: string[];
+    requires: string[];
+  } | null;
+  actor: string;
+  siteKey?: string | null;
+  execution?: {
+    draftId?: string | null;
+    repoChangeId?: string | null;
+    targetType?: string | null;
+    targetId?: string | null;
+    detailHref?: string | null;
+    lastAction?: string | null;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+  statusTimeline?: Array<{
+    label: string;
+    at: string;
+    by?: string | null;
+    note?: string | null;
+  }>;
+};
+
 export type OpsPreviewTokenRecord = {
   token: string;
   draftId: string;
@@ -319,6 +369,45 @@ export async function listOpsTargets(params?: { type?: string; q?: string }) {
   if (params?.q) url.searchParams.set("q", params.q);
   const res = await fetchJson<OpsEnvelope<{ items: OpsTarget[]; total: number }>>(url);
   return res.data ?? { items: [], total: 0 };
+}
+
+export async function listOpsChangeRequests(params?: { status?: string; lane?: string; limit?: number }) {
+  const url = new URL(`${getBaseUrl()}/ops/change-requests`);
+  if (params?.status) url.searchParams.set("status", params.status);
+  if (params?.lane) url.searchParams.set("lane", params.lane);
+  if (params?.limit) url.searchParams.set("limit", String(params.limit));
+  const res = await fetchJson<OpsEnvelope<{ items: OpsChangeRequest[]; total: number }>>(url, {
+    headers: getAdminHeaders(),
+  });
+  return res.data!;
+}
+
+export async function getOpsChangeRequest(id: string) {
+  const url = `${getBaseUrl()}/ops/change-requests/${encodeURIComponent(id)}`;
+  const res = await fetchJson<OpsEnvelope<{ changeRequest: OpsChangeRequest }>>(url, {
+    headers: getAdminHeaders(),
+  });
+  return res.data!.changeRequest;
+}
+
+export async function createOpsChangeRequest(input: Omit<OpsChangeRequest, "id" | "status" | "actor" | "createdAt" | "updatedAt" | "statusTimeline">) {
+  const url = `${getBaseUrl()}/ops/change-requests`;
+  const res = await fetchJson<OpsEnvelope<{ changeRequest: OpsChangeRequest }>>(url, {
+    method: "POST",
+    headers: getAdminHeaders(),
+    body: JSON.stringify(input),
+  });
+  return res.data!.changeRequest;
+}
+
+export async function transitionOpsChangeRequest(id: string, input: { status: string; note?: string; patch?: Record<string, unknown> }) {
+  const url = `${getBaseUrl()}/ops/change-requests/${encodeURIComponent(id)}/transition`;
+  const res = await fetchJson<OpsEnvelope<{ changeRequest: OpsChangeRequest }>>(url, {
+    method: "POST",
+    headers: getAdminHeaders(),
+    body: JSON.stringify(input),
+  });
+  return res.data!.changeRequest;
 }
 
 export async function listOpsPlaybooks(params?: { limit?: number }) {
@@ -2275,6 +2364,28 @@ export async function listRepoChanges(params?: {
   return res.data ?? { items: [], total: 0 };
 }
 
+export async function createOpsRepoChange(input: Partial<RepoChangeRecord> & {
+  title: string;
+  summary: string;
+  kind: string;
+}) {
+  const url = `${getBaseUrl()}/ops/repo-changes`;
+  const res = await fetchJson<OpsEnvelope<{ repoChange: RepoChangeRecord }>>(url, {
+    method: "POST",
+    headers: getAdminHeaders(),
+    body: JSON.stringify(input),
+  });
+  return res.data!.repoChange;
+}
+
+export async function getOpsRepoChange(id: string) {
+  const url = `${getBaseUrl()}/ops/repo-changes/${encodeURIComponent(id)}`;
+  const res = await fetchJson<OpsEnvelope<{ repoChange: RepoChangeRecord }>>(url, {
+    headers: getAdminHeaders(),
+  });
+  return res.data!.repoChange;
+}
+
 export async function syncRepoChange(id: string) {
   const url = `${getBaseUrl()}/ops/repo-changes/${id}/sync`;
   const res = await fetchJson<OpsEnvelope<{ repoChange: RepoChangeRecord; sync: { status: string; message: string } }>>(url, {
@@ -2353,6 +2464,7 @@ export async function transitionRepoChange(
 }
 
 export async function generateOpsDraft(type: string, id: string) {
+  const siteKey = getActiveSiteContext().siteKey;
   const url =
     type === "faq" && id.includes(":")
       ? `${getBaseUrl()}/ops/targets/faq/${encodeURIComponent(id.split(":")[0])}/${encodeURIComponent(
@@ -2362,9 +2474,17 @@ export async function generateOpsDraft(type: string, id: string) {
   const res = await fetchJson<OpsEnvelope<{ draft: any }>>(url, {
     method: "POST",
     headers: getAdminHeaders(),
-    body: JSON.stringify({}),
+    body: JSON.stringify({
+      siteKeys: [siteKey],
+      currentSiteKey: siteKey,
+    }),
   });
-  return res.data!.draft;
+  const draft = res.data!.draft;
+  if (shouldAutoScopeGeneratedDraft(draft)) {
+    return updateOpsDraft(draft.id, { siteKeys: [siteKey] });
+  }
+
+  return draft;
 }
 
 export async function submitOpsDraft(draftId: string) {
@@ -2373,6 +2493,14 @@ export async function submitOpsDraft(draftId: string) {
     method: "POST",
     headers: getAdminHeaders(),
     body: JSON.stringify({}),
+  });
+  return res.data!.draft;
+}
+
+export async function getOpsDraft(draftId: string) {
+  const url = `${getBaseUrl()}/ops/drafts/${encodeURIComponent(draftId)}`;
+  const res = await fetchJson<OpsEnvelope<{ draft: OpsDraftRecord }>>(url, {
+    headers: getAdminHeaders(),
   });
   return res.data!.draft;
 }

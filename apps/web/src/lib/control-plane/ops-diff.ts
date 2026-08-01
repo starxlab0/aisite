@@ -12,12 +12,13 @@ export type DiffSection = {
 };
 
 export function getDiffSections(
-  kind: "product" | "collection" | "faq",
+  kind: "product" | "collection" | "faq" | "guide",
   publishedPayload: any,
   draftPayload: any,
 ): DiffSection[] {
   if (kind === "product") return diffProduct(publishedPayload, draftPayload);
   if (kind === "collection") return diffCollection(publishedPayload, draftPayload);
+  if (kind === "guide") return diffGuide(publishedPayload, draftPayload);
   return diffFaq(publishedPayload, draftPayload);
 }
 
@@ -32,6 +33,7 @@ function diffProduct(publishedPayload: any, draftPayload: any): DiffSection[] {
   ]);
 
   const rowsLists = [
+    diffListRow("Site keys", p.siteKeys, d.siteKeys),
     diffListRow("Key benefits", p.keyBenefits, d.keyBenefits),
     diffListRow("Who it’s for", p.whoItsFor, d.whoItsFor),
     diffListRow("Why it feels different", p.whyItFeelsDifferent, d.whyItFeelsDifferent),
@@ -54,8 +56,15 @@ function diffCollection(publishedPayload: any, draftPayload: any): DiffSection[]
     ["Hero summary", p.hero?.summary, d.hero?.summary],
   ]);
 
+  const scopeRow = diffListRow("Site keys", p.siteKeys, d.siteKeys);
   const linksRow = diffListRow("Internal links", p.internalLinks, d.internalLinks);
-  const rowsMeta = (linksRow ? [linksRow] : []) as DiffRow[];
+  const featuredProductsRow = diffListRow("Featured product slugs", p.featuredProductSlugs, d.featuredProductSlugs);
+  const ctaLinksRow = diffListRow(
+    "CTA links",
+    toCtaLinkList(p.ctaLinks),
+    toCtaLinkList(d.ctaLinks),
+  );
+  const rowsMeta = ([scopeRow, linksRow, featuredProductsRow, ctaLinksRow].filter(Boolean) as DiffRow[]);
 
   const pSections = Array.isArray(p.sections) ? p.sections : [];
   const dSections = Array.isArray(d.sections) ? d.sections : [];
@@ -85,6 +94,7 @@ function diffFaq(publishedPayload: any, draftPayload: any): DiffSection[] {
   const d = draftPayload ?? {};
 
   const rowsTitle = diffTextRows([["Title", p.title, d.title]]);
+  const scopeRow = diffListRow("Site keys", p.siteKeys, d.siteKeys);
 
   const pItems = Array.isArray(p.items) ? p.items : [];
   const dItems = Array.isArray(d.items) ? d.items : [];
@@ -104,8 +114,36 @@ function diffFaq(publishedPayload: any, draftPayload: any): DiffSection[] {
   }
 
   return [
-    { title: "标题", rows: rowsTitle },
+    { title: "标题", rows: [...rowsTitle, ...(scopeRow ? [scopeRow] : [])] },
     { title: "条目", rows: rowsItems },
+  ].filter((s) => s.rows.length > 0);
+}
+
+function diffGuide(publishedPayload: any, draftPayload: any): DiffSection[] {
+  const p = publishedPayload ?? {};
+  const d = draftPayload ?? {};
+
+  const rowsBasic = diffTextRows([
+    ["Title", p.title, d.title],
+    ["Excerpt", p.excerpt, d.excerpt],
+    ["Hero title", p.heroTitle, d.heroTitle],
+    ["Hero summary", p.heroSummary, d.heroSummary],
+    ["SEO title", p.seo?.title, d.seo?.title],
+    ["SEO description", p.seo?.description, d.seo?.description],
+  ]);
+
+  const rowsLists = [
+    diffListRow("Site keys", p.siteKeys, d.siteKeys),
+    diffListRow("Body", p.body, d.body),
+    diffListRow("TOC", p.toc, d.toc),
+    diffListRow("Related products", p.relatedProductSlugs, d.relatedProductSlugs),
+    diffListRow("Related collections", p.relatedCollectionSlugs, d.relatedCollectionSlugs),
+    diffListRow("FAQ ids", p.faqIds, d.faqIds),
+  ].filter(Boolean) as DiffRow[];
+
+  return [
+    { title: "核心文案", rows: rowsBasic },
+    { title: "列表内容", rows: rowsLists },
   ].filter((s) => s.rows.length > 0);
 }
 
@@ -160,4 +198,17 @@ function toStringList(value: unknown): string[] {
 
 function joinLines(items: string[]): string {
   return items.length ? items.join("\n") : "∅";
+}
+
+function toCtaLinkList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") return "";
+      const href = String((item as { href?: unknown }).href ?? "").trim();
+      const label = String((item as { label?: unknown }).label ?? "").trim();
+      if (!href && !label) return "";
+      return label ? `${label} -> ${href}` : href;
+    })
+    .filter(Boolean);
 }

@@ -6,8 +6,13 @@ import { toProductPageViewModel } from "@/lib/cms/mapping";
 import { resolveProductContent } from "@/lib/content/resolvers";
 import { getPublishedProductFaqDraftBySlug } from "@/lib/control-plane/drafts";
 import { resolvePreviewToken } from "@/lib/control-plane/ops";
+import { buildSeoMetadata } from "@/lib/seo/metadata";
 import { getRepoChangeSeoOverride } from "@/lib/seo/repo-change-overrides";
 import { buildAbsoluteUrl } from "@/lib/seo/url";
+import { getLocalizedCopy } from "@/lib/site/copy";
+import { localizeProductContent } from "@/lib/site/localize-content";
+import { buildLocalePath } from "@/lib/site/locale-routing";
+import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
 import { getActiveSiteConfig } from "@/lib/site/config";
 import { formatMoney } from "@/lib/utils/money";
 import { addToCartAction } from "@/features/cart/actions";
@@ -25,33 +30,36 @@ type Props = {
 };
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
+  const localeKey = await getRequestLocaleKey();
+  const copy = getLocalizedCopy(localeKey).product;
   const { slug } = await params;
   const commerce = await getProductBySlug(slug);
   const resolved = await resolveProductContent(slug);
-  const canonicalPath = `/product/${slug}`;
+  const localizedContent = localizeProductContent(resolved.content, localeKey);
   const override = getRepoChangeSeoOverride("product", slug);
 
-  const title = override?.title || resolved.content?.seo?.title || resolved.content?.title || commerce?.name || slug;
-  const description =
-    override?.description ||
-    resolved.content?.seo?.description ||
-    resolved.content?.shortDescription ||
-    `${title} · 商品详情、适合人群与 FAQ。`;
+  const title = localizedContent?.seo?.title || localizedContent?.title || commerce?.name || slug;
+  const description = localizedContent?.seo?.description || localizedContent?.shortDescription || `${title} · ${copy.metadataDescriptionSuffix}`;
+  const siteKeys = Array.from(new Set([...(commerce?.siteKeys ?? []), ...(resolved.content?.siteKeys ?? [])]));
 
-  return {
+  return buildSeoMetadata({
     title,
     description,
-    alternates: {
-      canonical: override?.canonical || canonicalPath,
+    path: `/product/${slug}`,
+    override: {
+      title: override?.title,
+      description: override?.description,
+      canonical: override?.canonical,
+      robots: override?.robots,
     },
-    robots: {
-      index: override?.robots?.index ?? true,
-      follow: override?.robots?.follow ?? true,
-    },
-  };
+    openGraphType: "website",
+    siteKeys: siteKeys.length ? siteKeys : undefined,
+  });
 }
 
 export default async function ProductPage({ params, searchParams }: Props) {
+  const localeKey = await getRequestLocaleKey();
+  const copy = getLocalizedCopy(localeKey).product;
   const { slug } = await params;
   const sp = (await searchParams) ?? {};
   const previewToken = typeof sp.preview === "string" ? sp.preview : null;
@@ -60,9 +68,9 @@ export default async function ProductPage({ params, searchParams }: Props) {
     return (
       <div className="mx-auto w-full max-w-3xl px-4 py-14">
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
-          没找到这款商品
+          {copy.notFoundTitle}
         </h1>
-        <p className="mt-3 text-zinc-600">这款商品可能已下架、改名，或当前链接已失效。</p>
+        <p className="mt-3 text-zinc-600">{copy.notFoundDescription}</p>
       </div>
     );
   }
@@ -86,6 +94,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
         whyItFeelsDifferent: payload.whyItFeelsDifferent,
         careInstructions: payload.careInstructions,
         whatsInBox: payload.whatsInBox,
+        locales: payload.locales,
       };
       resolved = {
         source: "control-plane-draft",
@@ -95,11 +104,12 @@ export default async function ProductPage({ params, searchParams }: Props) {
           draftRef: `preview:${previewToken}`,
         },
       };
-      previewBadge = "Preview mode";
+      previewBadge = copy.previewBadge;
     }
   }
   const faqDraft = await getPublishedProductFaqDraftBySlug(slug);
-  const vm = toProductPageViewModel({ commerce, content: resolved.content });
+  const localizedContent = localizeProductContent(resolved.content, localeKey);
+  const vm = toProductPageViewModel({ commerce, content: localizedContent, localeKey });
   const relatedProducts = (await listProducts())
     .filter((item) => item.slug !== slug)
     .filter(
@@ -118,7 +128,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
     "@context": "https://schema.org",
     "@type": "Product",
     name: vm.title,
-    description: resolved.content?.shortDescription ?? commerce.name,
+    description: localizedContent?.shortDescription ?? commerce.name,
     url: buildAbsoluteUrl(`/product/${slug}`),
     brand: {
       "@type": "Brand",
@@ -169,23 +179,63 @@ export default async function ProductPage({ params, searchParams }: Props) {
           {vm.subtitle ? (
             <p className="mt-2 text-base font-medium text-zinc-700">{vm.subtitle}</p>
           ) : null}
-          {resolved.content?.shortDescription ? (
-            <p className="mt-3 text-zinc-600">{resolved.content.shortDescription}</p>
+          {localizedContent?.shortDescription ? (
+            <p className="mt-3 text-zinc-600">{localizedContent.shortDescription}</p>
           ) : (
-            <p className="mt-3 text-zinc-600">
-              {commerce.name} 当前优先展示价格、库存、基础参数和购买入口，方便你先快速判断这款商品是否适合自己。
-            </p>
+            <p className="mt-3 text-zinc-600">{commerce.name} {copy.defaultDescription}</p>
           )}
           {resolved.debug?.draftRef ? (
             <p className="mt-3 text-xs text-zinc-500">
-              Draft active:{" "}
+              {copy.draftActive}:{" "}
               <code className="rounded bg-zinc-100 px-1">{resolved.debug.draftRef}</code>
             </p>
           ) : null}
         </div>
-        <Link className="text-sm underline underline-offset-4" href="/shop">
-          返回商品列表
+        <Link className="text-sm underline underline-offset-4" href={buildLocalePath("/shop", localeKey)}>
+          {copy.backToShop}
         </Link>
+      </div>
+
+      <div className="mt-8 rounded-[2rem] border border-zinc-200 bg-white p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="max-w-2xl">
+            <p className="text-sm font-medium text-zinc-900">{copy.quickCheckTitle}</p>
+            <p className="mt-2 text-sm leading-6 text-zinc-600">
+              {vm.title}
+              {vm.subtitle ? ` 更偏向 ${vm.subtitle}。` : ` ${copy.quickCheckWithoutSubtitle}`}
+              {vm.whoItsFor[0]
+                ? ` 如果你属于“${vm.whoItsFor[0]}”这类场景，这款会比继续盲目横向比较更省时间。`
+                : ` ${copy.quickCheckFallbackWho}`}
+            </p>
+          </div>
+          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-4 py-2 text-xs text-zinc-600">
+            {copy.quickCheckBadge}
+          </div>
+        </div>
+        <div className="mt-5 grid gap-4 lg:grid-cols-3">
+          <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+            <p className="text-sm font-medium text-zinc-900">{copy.whatItIs}</p>
+            <p className="mt-2 text-sm leading-6 text-zinc-600">
+              {localizedContent?.shortDescription || copy.fallbackWhatItIs(vm.title)}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+            <p className="text-sm font-medium text-zinc-900">{copy.whoItsFor}</p>
+            <p className="mt-2 text-sm leading-6 text-zinc-600">
+              {vm.whoItsFor[0]
+                ? vm.whoItsFor[0]
+                : copy.fallbackWho}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+            <p className="text-sm font-medium text-zinc-900">{copy.whyChooseIt}</p>
+            <p className="mt-2 text-sm leading-6 text-zinc-600">
+              {vm.whyItFeelsDifferent[0]
+                ? vm.whyItFeelsDifferent[0]
+                : copy.fallbackWhyChoose}
+            </p>
+          </div>
+        </div>
       </div>
 
       <div className="mt-10 grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
@@ -193,22 +243,22 @@ export default async function ProductPage({ params, searchParams }: Props) {
           <div className="rounded-[2rem] border border-zinc-200 bg-white p-6">
             <div className="flex aspect-[4/3] items-end justify-between rounded-[1.5rem] bg-gradient-to-br from-zinc-50 via-white to-zinc-100 p-6">
               <div>
-                <p className="text-xs font-medium uppercase tracking-[0.22em] text-zinc-500">
-                  {resolved.content?.hero?.eyebrow || commerce.brand}
+              <p className="text-xs font-medium uppercase tracking-[0.22em] text-zinc-500">
+                  {localizedContent?.hero?.eyebrow || commerce.brand}
                 </p>
                 <p className="mt-3 text-2xl font-semibold text-zinc-900">{vm.title}</p>
                 <p className="mt-2 text-sm text-zinc-600">{vm.subtitle || commerce.series}</p>
               </div>
               <div className="rounded-full border border-white/70 bg-white/80 px-3 py-1 text-xs text-zinc-700 backdrop-blur">
-                {commerce.wearable ? "可穿戴" : "主力单品"}
+                {commerce.wearable ? copy.heroBadgeWearable : copy.heroBadgePrimary}
               </div>
             </div>
-            {resolved.content?.hero?.headline ? (
+            {localizedContent?.hero?.headline ? (
               <div className="mt-6 rounded-2xl border border-zinc-200 bg-zinc-50 p-5">
-                <p className="text-lg font-semibold text-zinc-900">{resolved.content.hero.headline}</p>
-                {resolved.content.hero.description ? (
+                <p className="text-lg font-semibold text-zinc-900">{localizedContent.hero.headline}</p>
+                {localizedContent.hero.description ? (
                   <p className="mt-2 text-sm leading-6 text-zinc-600">
-                    {resolved.content.hero.description}
+                    {localizedContent.hero.description}
                   </p>
                 ) : null}
               </div>
@@ -216,11 +266,11 @@ export default async function ProductPage({ params, searchParams }: Props) {
           </div>
 
           <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-            <p className="text-sm font-medium text-zinc-900">为什么值得买</p>
+            <p className="text-sm font-medium text-zinc-900">{copy.whyWorthBuying}</p>
             <ul className="mt-4 list-disc space-y-2 pl-5 text-sm leading-6 text-zinc-700">
               {(vm.keyBenefits.length
                 ? vm.keyBenefits
-                : ["适合快速上手", "强调低调体验", "更容易理解购买决策"]).map((x) => (
+                : copy.whyWorthBuyingFallback).map((x) => (
                 <li key={x}>{x}</li>
               ))}
             </ul>
@@ -228,33 +278,33 @@ export default async function ProductPage({ params, searchParams }: Props) {
 
           <div className="grid gap-6 lg:grid-cols-3">
             <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-              <p className="text-sm font-medium text-zinc-900">更适合谁</p>
+              <p className="text-sm font-medium text-zinc-900">{copy.whoItsFor}</p>
               <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
                 {(vm.whoItsFor.length
                   ? vm.whoItsFor
-                  : ["第一次选购但不想踩坑", "需要更安静或更低调的体验"]).map((x) => (
+                  : copy.fallbackWhoList).map((x) => (
                   <li key={x}>{x}</li>
                 ))}
               </ul>
             </div>
 
             <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-              <p className="text-sm font-medium text-zinc-900">这款为什么不一样</p>
+              <p className="text-sm font-medium text-zinc-900">{copy.whyDifferent}</p>
               <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
                 {(vm.whyItFeelsDifferent.length
                   ? vm.whyItFeelsDifferent
-                  : ["更容易理解卖点", "更适合做首单选择"]).map((x) => (
+                  : copy.whyDifferentFallback).map((x) => (
                   <li key={x}>{x}</li>
                 ))}
               </ul>
             </div>
 
             <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-              <p className="text-sm font-medium text-zinc-900">包装内含</p>
+              <p className="text-sm font-medium text-zinc-900">{copy.whatsInBox}</p>
               <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
                 {(vm.whatsInBox.length
                   ? vm.whatsInBox
-                  : ["主机", "充电线", "基础使用说明"]).map((x) => (
+                  : copy.whatsInBoxFallback).map((x) => (
                   <li key={x}>{x}</li>
                 ))}
               </ul>
@@ -263,7 +313,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
 
           <div className="grid gap-6 lg:grid-cols-2">
             <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-              <p className="text-sm font-medium text-zinc-900">产品参数</p>
+              <p className="text-sm font-medium text-zinc-900">{copy.specs}</p>
               <ul className="mt-3 space-y-2 text-sm text-zinc-700">
                 {vm.specs.length ? (
                   vm.specs.map((s) => (
@@ -272,17 +322,17 @@ export default async function ProductPage({ params, searchParams }: Props) {
                     </li>
                   ))
                 ) : (
-                  <li className="text-zinc-600">材质 / 防水 / 续航 / 充电 / 尺寸</li>
+                  <li className="text-zinc-600">{copy.specsFallback}</li>
                 )}
               </ul>
             </div>
 
             <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-              <p className="text-sm font-medium text-zinc-900">使用与收纳</p>
+              <p className="text-sm font-medium text-zinc-900">{copy.care}</p>
               <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
-                {(resolved.content?.careInstructions?.length
-                  ? resolved.content.careInstructions
-                  : ["使用后及时清洁", "保持干燥并按说明收纳"]).map((x) => (
+                {(localizedContent?.careInstructions?.length
+                  ? localizedContent.careInstructions
+                  : copy.careFallback).map((x) => (
                   <li key={x}>{x}</li>
                 ))}
               </ul>
@@ -293,7 +343,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
         <div className="order-1 space-y-5 lg:order-2 lg:sticky lg:top-28 lg:self-start">
           <AiConciergeEntry placement="product" productSlug={slug} />
           <div className="rounded-[2rem] border border-zinc-200 bg-white p-6">
-            <p className="text-sm text-zinc-500">价格与库存</p>
+            <p className="text-sm text-zinc-500">{copy.priceAndStock}</p>
             <p className="mt-2 text-3xl font-semibold text-zinc-900">
               {formatMoney(vm.price.amount, vm.price.currency)}
             </p>
@@ -304,18 +354,18 @@ export default async function ProductPage({ params, searchParams }: Props) {
             ) : null}
             <div className="mt-4 grid gap-3 rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-700">
               <div className="flex items-center justify-between">
-                <span>库存状态</span>
+                <span>{copy.stockStatus}</span>
                 <span className="font-medium text-zinc-900">
-                  {vm.inStock ? "可下单" : "暂时缺货"}
+                  {vm.inStock ? copy.inStock : copy.outOfStock}
                 </span>
               </div>
               <div className="flex items-center justify-between">
-                <span>发货时效</span>
-                <span className="font-medium text-zinc-900">48 小时内</span>
+                <span>{copy.shippingSla}</span>
+                <span className="font-medium text-zinc-900">{copy.shippingSlaValue}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span>包装方式</span>
-                <span className="font-medium text-zinc-900">低调隐私包装</span>
+                <span>{copy.packaging}</span>
+                <span className="font-medium text-zinc-900">{copy.packagingValue}</span>
               </div>
             </div>
             <form action={addToCartAction} className="mt-4">
@@ -336,15 +386,15 @@ export default async function ProductPage({ params, searchParams }: Props) {
                 disabled={!commerce.defaultVariantId}
                 type="submit"
               >
-                加入购物车
+                {copy.addToCart}
               </TrackedSubmitButton>
             </form>
             <div className="mt-3 flex flex-wrap gap-3 text-sm">
-              <Link className="underline underline-offset-4" href="/cart">
-                去购物车
+              <Link className="underline underline-offset-4" href={buildLocalePath("/cart", localeKey)}>
+                {copy.goToCart}
               </Link>
-              <Link className="underline underline-offset-4" href="/checkout">
-                直接去结账
+              <Link className="underline underline-offset-4" href={buildLocalePath("/checkout", localeKey)}>
+                {copy.checkout}
               </Link>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
@@ -355,14 +405,14 @@ export default async function ProductPage({ params, searchParams }: Props) {
               ))}
             </div>
             <div className="mt-5 grid gap-2 text-sm text-zinc-600">
-              <Link className="underline underline-offset-4" href="/shipping">
-                配送说明
+              <Link className="underline underline-offset-4" href={buildLocalePath("/shipping", localeKey)}>
+                {copy.shipping}
               </Link>
-              <Link className="underline underline-offset-4" href="/returns">
-                退换政策
+              <Link className="underline underline-offset-4" href={buildLocalePath("/returns", localeKey)}>
+                {copy.returns}
               </Link>
-              <Link className="underline underline-offset-4" href="/contact">
-                购买前咨询
+              <Link className="underline underline-offset-4" href={buildLocalePath("/contact", localeKey)}>
+                {copy.contact}
               </Link>
             </div>
           </div>
@@ -371,11 +421,11 @@ export default async function ProductPage({ params, searchParams }: Props) {
 
       <div className="mt-10 grid gap-6 lg:grid-cols-3">
         <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-          <p className="text-sm font-medium text-zinc-900">更适合谁</p>
+          <p className="text-sm font-medium text-zinc-900">{copy.whoItsFor}</p>
           <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
             {(vm.whoItsFor.length
               ? vm.whoItsFor
-              : ["适合第一次购买但希望尽快缩小范围的人", "适合重视体验清晰度与决策效率的人"]
+              : [copy.fallbackWho, "适合重视体验清晰度与决策效率的人"]
             ).map((x) => (
               <li key={x}>{x}</li>
             ))}
@@ -383,11 +433,11 @@ export default async function ProductPage({ params, searchParams }: Props) {
         </div>
 
         <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-          <p className="text-sm font-medium text-zinc-900">这款为什么不一样</p>
+          <p className="text-sm font-medium text-zinc-900">{copy.whyDifferent}</p>
           <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
             {(vm.whyItFeelsDifferent.length
               ? vm.whyItFeelsDifferent
-              : ["卖点表达更直接，便于快速判断是否适合自己", "商品信息与购买入口集中，减少来回比较成本"]
+              : copy.whyDifferentFallback
             ).map((x) => (
               <li key={x}>{x}</li>
             ))}
@@ -395,11 +445,11 @@ export default async function ProductPage({ params, searchParams }: Props) {
         </div>
 
         <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-          <p className="text-sm font-medium text-zinc-900">包装内含</p>
+          <p className="text-sm font-medium text-zinc-900">{copy.whatsInBox}</p>
           <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
             {(vm.whatsInBox.length
               ? vm.whatsInBox
-              : ["主机", "充电线", "基础使用说明"]
+              : copy.whatsInBoxFallback
             ).map((x) => (
               <li key={x}>{x}</li>
             ))}
@@ -409,7 +459,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
 
       <div className="mt-10 grid gap-6 lg:grid-cols-2">
         <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-          <p className="text-sm font-medium text-zinc-900">产品参数</p>
+          <p className="text-sm font-medium text-zinc-900">{copy.specs}</p>
           <ul className="mt-3 space-y-2 text-sm text-zinc-700">
             {vm.specs.length ? (
               vm.specs.map((s) => (
@@ -418,15 +468,15 @@ export default async function ProductPage({ params, searchParams }: Props) {
                 </li>
               ))
             ) : (
-              <li className="text-zinc-600">材质 / 防水 / 续航 / 充电 / 尺寸</li>
+              <li className="text-zinc-600">{copy.specsFallback}</li>
             )}
           </ul>
         </div>
         <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-          <p className="text-sm font-medium text-zinc-900">购买前常见问题</p>
+          <p className="text-sm font-medium text-zinc-900">{copy.productFaq}</p>
           <div className="mt-2">
-            <Link className="text-xs underline underline-offset-4 text-zinc-600" href="/faq">
-              查看完整 FAQ
+            <Link className="text-xs underline underline-offset-4 text-zinc-600" href={buildLocalePath("/faq", localeKey)}>
+              {copy.viewFullFaq}
             </Link>
           </div>
           {faqDraft ? (
@@ -447,8 +497,8 @@ export default async function ProductPage({ params, searchParams }: Props) {
             </div>
           ) : (
             <div className="mt-2 space-y-3 text-sm text-zinc-600">
-              <p>这款商品暂时还没有单独整理 FAQ，但你仍然可以先完成购买判断。</p>
-              <p>建议先查看通用 FAQ、配送说明和退换政策；如果仍有疑问，可以直接联系支持。</p>
+              <p>{copy.productFaqFallback1}</p>
+              <p>{copy.productFaqFallback2}</p>
             </div>
           )}
         </div>
@@ -458,13 +508,13 @@ export default async function ProductPage({ params, searchParams }: Props) {
         <div className="mt-10">
           <div className="flex items-end justify-between gap-4">
             <div>
-              <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">继续逛</p>
+              <p className="text-sm font-medium uppercase tracking-[0.24em] text-zinc-500">{copy.continueEyebrow}</p>
               <h2 className="mt-2 text-2xl font-semibold tracking-tight text-zinc-900">
-                相关商品
+                {copy.relatedProducts}
               </h2>
             </div>
-            <Link className="text-sm underline underline-offset-4" href="/shop">
-              查看更多
+            <Link className="text-sm underline underline-offset-4" href={buildLocalePath("/shop", localeKey)}>
+              {copy.viewMore}
             </Link>
           </div>
           <div className="mt-6 grid gap-6 md:grid-cols-3">

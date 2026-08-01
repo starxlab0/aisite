@@ -1,30 +1,50 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { buildAbsoluteUrl } from "@/lib/seo/url";
+import { buildSeoMetadata } from "@/lib/seo/metadata";
 import { resolveGuideList } from "@/lib/content/resolvers";
+import { getLocalizedCopy } from "@/lib/site/copy";
+import { getSiteConfigForLocale, isSiteFeatureEnabled } from "@/lib/site/config";
+import { localizeGuideArticle } from "@/lib/site/localize-content";
+import { buildLocalePath } from "@/lib/site/locale-routing";
+import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
 
 export async function generateMetadata(): Promise<Metadata> {
-  return {
-    title: "Guides",
-    description: "购买指南、场景建议与关联商品入口。",
-    alternates: {
-      canonical: "/guides",
-    },
-    robots: {
-      index: true,
-      follow: true,
-    },
-  };
+  const localeKey = await getRequestLocaleKey();
+  if (!isSiteFeatureEnabled("guides", localeKey)) {
+    return buildSeoMetadata({
+      title: "Not Found",
+      description: "Not Found",
+      path: "/guides",
+      openGraphType: "website",
+    });
+  }
+  const copy = getLocalizedCopy(localeKey).guides;
+  return buildSeoMetadata({
+    title: copy.metadataTitle,
+    description: copy.metadataDescription,
+    path: "/guides",
+    openGraphType: "website",
+    featurePath: "/guides",
+  });
 }
 
 export default async function GuidesPage() {
+  const localeKey = await getRequestLocaleKey();
+  if (!isSiteFeatureEnabled("guides", localeKey)) notFound();
+  const site = getSiteConfigForLocale(localeKey);
+  const copy = getLocalizedCopy(localeKey).guides;
   const guides = await resolveGuideList();
+  const localizedItems = guides.items
+    .map((guide) => localizeGuideArticle(guide, localeKey))
+    .filter((guide): guide is NonNullable<typeof guide> => Boolean(guide));
   const guidesJsonLd = {
     "@context": "https://schema.org",
     "@type": "CollectionPage",
     name: "Guides",
     url: buildAbsoluteUrl("/guides"),
-    hasPart: guides.items.map((guide) => ({
+    hasPart: localizedItems.map((guide) => ({
       "@type": "Article",
       headline: guide.title,
       url: buildAbsoluteUrl(`/guides/${guide.slug}`),
@@ -37,31 +57,32 @@ export default async function GuidesPage() {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(guidesJsonLd) }}
       />
       <h1 className="text-3xl font-semibold tracking-tight text-zinc-900">
-        Guides
+        {copy.title}
       </h1>
       <p className="mt-4 text-zinc-600">
-        内容中心：优先展示已发布的 <code className="rounded bg-zinc-100 px-1">guideArticle</code>，支持从
-        control-plane draft 或 Sanity 渲染。
+        {copy.intro}
       </p>
       <div className="mt-6 rounded-xl border border-zinc-200 bg-white p-5">
-        <p className="text-sm font-medium text-zinc-900">Start from content, then narrow to products</p>
-        <p className="mt-2 text-sm text-zinc-600">如果你还没有明确型号，先看 guide；如果想更快缩小范围，直接走问答或进入商品列表。</p>
+        <p className="text-sm font-medium text-zinc-900">{copy.startTitle}</p>
+        <p className="mt-2 text-sm text-zinc-600">{copy.startDescription}</p>
         <div className="mt-4 flex flex-wrap gap-4 text-sm">
-          <Link className="underline underline-offset-4" href="/quiz?src=guides">
-            Find your match
-          </Link>
-          <Link className="underline underline-offset-4" href="/shop">
-            Shop all
+          {site.site.features.quiz ? (
+            <Link className="underline underline-offset-4" href={buildLocalePath("/quiz?src=guides", localeKey)}>
+              {copy.primaryCta}
+            </Link>
+          ) : null}
+          <Link className="underline underline-offset-4" href={buildLocalePath("/shop", localeKey)}>
+            {copy.secondaryCta}
           </Link>
         </div>
       </div>
       <div className="mt-8 rounded-xl border border-zinc-200 bg-white p-5">
-        <p className="text-sm font-medium text-zinc-900">文章列表</p>
-        <p className="mt-1 text-xs text-zinc-500">source: {guides.source}</p>
+        <p className="text-sm font-medium text-zinc-900">{copy.listTitle}</p>
+        <p className="mt-1 text-xs text-zinc-500">{copy.sourceLabel}: {guides.source}</p>
         <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700">
-          {guides.items.map((guide) => (
+          {localizedItems.map((guide) => (
             <li key={guide.slug}>
-              <Link className="underline underline-offset-4" href={`/guides/${guide.slug}`}>
+              <Link className="underline underline-offset-4" href={buildLocalePath(`/guides/${guide.slug}`, localeKey)}>
                 {guide.title}
               </Link>
               {guide.excerpt ? <p className="mt-1 text-zinc-600">{guide.excerpt}</p> : null}

@@ -1,4 +1,5 @@
-import { createRuleTuningProposal, getAutoActionPolicy, getMonitoringSummary, getOpsAuthStatus, getOpsEvents, getRecommendationRuleStats, getRecommendations, getSignalsOverview, getSignalsStatus, listOpsTargets, listRepoChanges, listRuleTuningProposals, openRepoChangePullRequest, openRepoChangeRevertPullRequest, resolveRecommendation, syncActiveRepoChanges, syncRepoChange, transitionRuleTuningProposal, updateAutoActionPolicy } from "@/lib/control-plane/ops";
+import { createOpsChangeRequest, createRuleTuningProposal, getAutoActionPolicy, getMonitoringSummary, getOpsAuthStatus, getOpsEvents, getRecommendationRuleStats, getRecommendations, getSignalsOverview, getSignalsStatus, listOpsTargets, listRepoChanges, listRuleTuningProposals, openRepoChangePullRequest, openRepoChangeRevertPullRequest, resolveRecommendation, syncActiveRepoChanges, syncRepoChange, transitionRuleTuningProposal, updateAutoActionPolicy } from "@/lib/control-plane/ops";
+import { resolveOpsIntent } from "@/lib/control-plane/ops-intent";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { GovernanceBadge, governanceToneClass } from "./components/governance-ui";
@@ -15,6 +16,8 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
   const repoNext = typeof sp.repoNext === "string" ? sp.repoNext : undefined;
   const err = typeof sp.err === "string" ? sp.err : undefined;
   const msg = typeof sp.msg === "string" ? sp.msg : undefined;
+  const intentPrompt = typeof sp.intentPrompt === "string" ? sp.intentPrompt : "";
+  const intentPreview = sp.intentPreview === "1";
 
   const { items } = await listOpsTargets({ type, q });
   const authStatus = await getOpsAuthStatus();
@@ -184,6 +187,38 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
       const message = error instanceof Error ? error.message : "Update auto-action policy failed";
       redirect(`/ops?err=${encodeURIComponent(message)}`);
     }
+  }
+
+  async function onRouteIntent(formData: FormData) {
+    "use server";
+    const prompt = String(formData.get("prompt") ?? "").trim();
+    if (!prompt) {
+      redirect("/ops");
+    }
+    redirect(`/ops?intentPreview=1&intentPrompt=${encodeURIComponent(prompt)}`);
+  }
+
+  async function onCreateChangeRequest(formData: FormData) {
+    "use server";
+    const prompt = String(formData.get("prompt") ?? "").trim();
+    if (!prompt) {
+      redirect("/ops");
+    }
+    const resolved = resolveOpsIntent(prompt);
+    const request = await createOpsChangeRequest({
+      title: `${resolved.label} · ${resolved.query || "AI request"}`,
+      prompt,
+      lane: resolved.lane,
+      label: resolved.label,
+      href: resolved.href,
+      query: resolved.query,
+      summary: resolved.summary,
+      impact: resolved.impact,
+      nextStep: resolved.nextStep,
+      plan: resolved.plan,
+      siteKey: resolved.plan?.sites?.[0] ?? null,
+    });
+    redirect(`/ops/changes/${request.id}`);
   }
 
   function actorLabel(actor: string) {
@@ -583,52 +618,85 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
             ? "Ready to revert"
             : null;
 
+  const taskGroups = [
+    {
+      title: "商品归属",
+      description: "先处理商品在哪些站点卖、哪些商品当前需要补内容或审核。",
+      items: [
+        { label: "查看商品工作台", href: "/ops?type=product" },
+        { label: "待发布队列", href: "/ops/queue" },
+      ],
+      note: "价格、库存、可售状态仍在 Medusa Admin 维护；这里主要负责内容草稿、审核和发布链路。",
+    },
+    {
+      title: "内容归属",
+      description: "按内容类型处理 guide、FAQ、collection，统一看哪些内容给哪些站点看。",
+      items: [
+        { label: "Guide 内容", href: "/ops?type=guide" },
+        { label: "FAQ 内容", href: "/ops?type=faq" },
+        { label: "Collection 内容", href: "/ops?type=collection" },
+      ],
+      note: "如果只是改正文和站点可见范围，优先从这里进，不需要先判断是 CMS 还是发布草稿。",
+    },
+    {
+      title: "页面运营",
+      description: "集中处理推荐商品、CTA、导流结构，以及当前最需要动作的 recommendation。",
+      items: [
+        { label: "当前待处理 recommendation", href: "/ops?status=open,in_progress" },
+        { label: "Collection 运营入口", href: "/ops?type=collection" },
+        { label: "监控与效果", href: "/ops/monitoring" },
+      ],
+      note: "适合做首页、collection、导购页的运营调优。",
+    },
+    {
+      title: "发布中心",
+      description: "把预览、发布、回滚、审核和 repo publish queue 集中到一个入口心智里。",
+      items: [
+        { label: "发布队列", href: "/ops/queue" },
+        { label: "审计记录", href: "/ops/audit" },
+        { label: "支持案例", href: "/ops/support-cases" },
+      ],
+      note: "上线前先看这里，确认没有阻塞发布的问题。",
+    },
+    {
+      title: "系统治理",
+      description: "保留原有的监控、runbook、checklist、feedback，但不再当成首页第一层入口。",
+      items: [
+        { label: "运行监控", href: "/ops/monitoring" },
+        { label: "Runbook", href: "/ops/runbook" },
+        { label: "Checklist", href: "/ops/checklist" },
+        { label: "Feedback", href: "/ops/feedback" },
+      ],
+      note: "这是系统治理层，不是日常运营的第一入口。",
+    },
+  ];
+
+  const compactNav = [
+    { label: "工作台", href: "/ops" },
+    { label: "商品归属", href: "/ops?type=product" },
+    { label: "内容归属", href: "/ops?type=guide" },
+    { label: "页面运营", href: "/ops?type=collection" },
+    { label: "变更单", href: "/ops/changes" },
+    { label: "发布中心", href: "/ops/queue" },
+    { label: "系统治理", href: "/ops/monitoring" },
+  ];
+  const intentResult = intentPreview ? resolveOpsIntent(intentPrompt) : null;
+
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-14">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Ops Console</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">AI 运营工作台</h1>
           <p className="mt-2 text-sm text-zinc-600">
-            B2.5：把 recommendation 提升为工作台主入口，并显示版本表现变化。
+            先按任务处理商品归属、内容归属、页面运营和发布，不需要先判断底层该去哪个系统。
           </p>
         </div>
-        <div className="flex gap-2">
-          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops">
-            All
-          </Link>
-          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/queue">
-            Queue
-          </Link>
-          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/monitoring">
-            Monitoring
-          </Link>
-          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/runbook">
-            Runbook
-          </Link>
-          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/checklist">
-            Checklist
-          </Link>
-          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/feedback">
-            Feedback
-          </Link>
-          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/customer-notifications">
-            Notifications
-          </Link>
-          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/support-cases">
-            Support cases
-          </Link>
-          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops/alerts">
-            Alerts
-          </Link>
-          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops?type=product">
-            Product
-          </Link>
-          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops?type=collection">
-            Collection
-          </Link>
-          <Link className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href="/ops?type=faq">
-            FAQ
-          </Link>
+        <div className="flex flex-wrap gap-2">
+          {compactNav.map((item) => (
+            <Link key={item.href} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href={item.href}>
+              {item.label}
+            </Link>
+          ))}
         </div>
       </div>
 
@@ -651,6 +719,177 @@ export default async function OpsDashboardPage({ searchParams }: Props) {
             Read-only mode: proposal transitions, repo publish actions, and policy updates require the `publish_content` capability.
           </p>
         ) : null}
+      </div>
+
+      <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-zinc-900">AI 指令入口</p>
+            <p className="mt-1 text-sm text-zinc-600">
+              先用自然语言描述你要改什么，我会把你送到对应任务入口。现在先做意图识别和跳转，不直接自动改数据。
+            </p>
+          </div>
+          <div className="text-xs text-zinc-500">
+            <p>支持：商品归属、内容归属、页面运营、发布中心、系统治理</p>
+          </div>
+        </div>
+        <form action={onRouteIntent} className="mt-4">
+          <div className="flex flex-col gap-3 md:flex-row">
+            <input
+              name="prompt"
+              type="text"
+              defaultValue={intentPrompt}
+              className="min-w-0 flex-1 rounded-xl border border-zinc-300 px-4 py-3 text-sm outline-none ring-0 placeholder:text-zinc-400"
+              placeholder="例如：把 handou 只放到 US 站；JP 站关闭 app-control；US 站 first-time collection 主推 haili"
+            />
+            <button
+              type="submit"
+              className="inline-flex items-center justify-center rounded-xl bg-zinc-900 px-4 py-3 text-sm font-medium text-white"
+            >
+              生成预览
+            </button>
+          </div>
+        </form>
+        <div className="mt-4 flex flex-wrap gap-2 text-xs text-zinc-500">
+          <span className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1.5">把 handou 只放到 US 站</span>
+          <span className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1.5">给 kokocang-x 增加 FAQ</span>
+          <span className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1.5">US 站 first-time collection 主推 haili</span>
+          <span className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1.5">查看发布队列</span>
+        </div>
+        {intentResult ? (
+          <div className="mt-5 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-zinc-900">变更预览</p>
+                <p className="mt-1 text-sm text-zinc-600">{intentResult.summary}</p>
+              </div>
+              <span className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-xs text-zinc-700">
+                {intentResult.label}
+              </span>
+            </div>
+            <div className="mt-4 grid gap-4 md:grid-cols-3">
+              <div className="rounded-xl border border-zinc-200 bg-white p-3">
+                <p className="text-xs text-zinc-500">识别到的任务</p>
+                <p className="mt-2 text-sm font-medium text-zinc-900">{intentResult.label}</p>
+              </div>
+              <div className="rounded-xl border border-zinc-200 bg-white p-3">
+                <p className="text-xs text-zinc-500">查询词</p>
+                <p className="mt-2 text-sm font-medium text-zinc-900">{intentResult.query || "未提取到具体对象"}</p>
+              </div>
+              <div className="rounded-xl border border-zinc-200 bg-white p-3">
+                <p className="text-xs text-zinc-500">下一步</p>
+                <p className="mt-2 text-sm font-medium text-zinc-900">{intentResult.nextStep}</p>
+              </div>
+            </div>
+            <div className="mt-4 rounded-xl border border-zinc-200 bg-white p-3">
+              <p className="text-xs text-zinc-500">预计影响</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {intentResult.impact.map((item) => (
+                  <span key={item} className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs text-zinc-700">
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </div>
+            {intentResult.plan ? (
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <div className="rounded-xl border border-zinc-200 bg-white p-3">
+                  <p className="text-xs text-zinc-500">拟执行动作</p>
+                  <p className="mt-2 text-sm font-medium text-zinc-900">{intentResult.plan.kind}</p>
+                  <p className="mt-1 text-xs text-zinc-600">
+                    {intentResult.plan.targetType ? `target: ${intentResult.plan.targetType}` : "target: ∅"}
+                    {intentResult.plan.targetId ? ` · id: ${intentResult.plan.targetId}` : ""}
+                  </p>
+                  {Array.isArray(intentResult.plan.sites) && intentResult.plan.sites.length ? (
+                    <p className="mt-2 text-xs text-zinc-600">sites: {intentResult.plan.sites.join(" · ")}</p>
+                  ) : null}
+                  {intentResult.plan.fields ? (
+                    <pre className="mt-2 overflow-auto rounded-lg bg-zinc-950 px-3 py-2 text-xs text-zinc-100">
+                      {JSON.stringify(intentResult.plan.fields, null, 2)}
+                    </pre>
+                  ) : null}
+                </div>
+                <div className="rounded-xl border border-zinc-200 bg-white p-3">
+                  <p className="text-xs text-zinc-500">影响路径</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {intentResult.plan.affectedPaths.map((item) => (
+                      <span key={item} className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs text-zinc-700">
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                  {intentResult.plan.risks.length ? (
+                    <>
+                      <p className="mt-3 text-xs text-zinc-500">风险提示</p>
+                      <ul className="mt-2 list-disc pl-5 text-xs text-rose-700">
+                        {intentResult.plan.risks.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
+                  {intentResult.plan.requires.length ? (
+                    <>
+                      <p className="mt-3 text-xs text-zinc-500">需要配合</p>
+                      <ul className="mt-2 list-disc pl-5 text-xs text-zinc-600">
+                        {intentResult.plan.requires.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            <div className="mt-4 flex flex-wrap gap-3">
+              <form action={onCreateChangeRequest}>
+                <input type="hidden" name="prompt" value={intentPrompt} />
+                <button
+                  type="submit"
+                  className="inline-flex items-center justify-center rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white"
+                >
+                  生成变更单
+                </button>
+              </form>
+              <Link
+                href={intentResult.href}
+                className="inline-flex items-center justify-center rounded-xl border border-zinc-200 px-4 py-2.5 text-sm text-zinc-700"
+              >
+                仅进入对应入口
+              </Link>
+              <Link
+                href="/ops"
+                className="inline-flex items-center justify-center rounded-xl border border-zinc-200 px-4 py-2.5 text-sm text-zinc-700"
+              >
+                清空预览
+              </Link>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="mt-8 rounded-2xl border border-sky-200 bg-sky-50 p-5">
+        <p className="text-sm font-medium text-sky-950">现在先按任务走，不按系统走</p>
+        <p className="mt-2 text-sm text-sky-900">
+          运营只需要判断这次是在改商品归属、内容归属、页面运营还是发布，不需要先区分是 Medusa、CMS 还是草稿系统。
+        </p>
+      </div>
+
+      <div className="mt-8 grid gap-4 lg:grid-cols-2">
+        {taskGroups.map((group) => (
+          <div key={group.title} className="rounded-2xl border border-zinc-200 bg-white p-5">
+            <p className="text-sm font-medium text-zinc-900">{group.title}</p>
+            <p className="mt-2 text-sm text-zinc-600">{group.description}</p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {group.items.map((item) => (
+                <Link key={item.href} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm" href={item.href}>
+                  {item.label}
+                </Link>
+              ))}
+            </div>
+            <p className="mt-4 text-xs text-zinc-500">{group.note}</p>
+          </div>
+        ))}
       </div>
 
       {signalsStatus.health !== "healthy" ? (

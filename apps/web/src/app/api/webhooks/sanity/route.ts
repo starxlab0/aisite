@@ -1,6 +1,7 @@
 import { revalidatePath } from "next/cache";
 import { NextResponse } from "next/server";
 import { envServer } from "@/lib/env/server";
+import { getActiveSiteConfig, isFeaturePathEnabled } from "@/lib/site/config";
 
 type SanityWebhookBody = {
   _id?: string;
@@ -81,7 +82,8 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json().catch(() => null)) as SanityWebhookBody | null;
-  const paths = derivePaths(body ?? {});
+  const site = getActiveSiteConfig();
+  const paths = derivePaths(body ?? {}).filter((path) => isFeaturePathEnabled(path, site.context.localeKey));
 
   if (!paths.length) {
     return NextResponse.json({ ok: true, skipped: "no_paths_resolved" });

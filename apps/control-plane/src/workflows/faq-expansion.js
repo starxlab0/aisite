@@ -165,6 +165,10 @@ function generateFaqDraft({ targetType, targetId, recommendation } = {}) {
     id: `${plan.target.type}-${plan.target.id}-faq-${index + 1}`,
     question,
     answer: buildAnswer(plan.target, question),
+    locales: {
+      en: {},
+      zh: {},
+    },
     intent: inferIntent(question),
     sourceAssetIds: plan.sourceAssets.map((asset) => asset.id),
     needsHumanReview: true,

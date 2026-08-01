@@ -8,6 +8,9 @@ const opsDrafts = new Map(
   (Array.isArray(persisted.drafts) ? persisted.drafts : []).map((item) => [item.id, item]),
 );
 const opsEvents = Array.isArray(persisted.events) ? persisted.events : [];
+const changeRequests = new Map(
+  (Array.isArray(persisted.changeRequests) ? persisted.changeRequests : []).map((item) => [item.id, item]),
+);
 const opsPlaybooks = new Map(
   (Array.isArray(persisted.playbooks) ? persisted.playbooks : []).map((item) => [item.id, item]),
 );
@@ -180,6 +183,7 @@ function persist() {
   saveState({
     drafts: Array.from(opsDrafts.values()),
     events: opsEvents,
+    changeRequests: Array.from(changeRequests.values()).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))),
     playbooks: Array.from(opsPlaybooks.values()),
     previewTokens: Array.from(previewTokens.values()),
     repoChanges: Array.from(repoChanges.values()),
@@ -194,6 +198,75 @@ function persist() {
     seoImportReplay,
     seoSyncStatus,
   });
+}
+
+function listChangeRequests({ status, lane, limit = 50 } = {}) {
+  let items = Array.from(changeRequests.values()).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  if (status) items = items.filter((item) => item.status === status);
+  if (lane) items = items.filter((item) => item.lane === lane);
+  return items.slice(0, Math.max(1, Math.min(Number(limit) || 50, 200)));
+}
+
+function getChangeRequest(id) {
+  return changeRequests.get(String(id || "").trim()) || null;
+}
+
+function createChangeRequest(input = {}) {
+  const createdAt = now();
+  const id = nextId("change");
+  const record = {
+    id,
+    status: "draft",
+    title: input.title || input.label || "AI change request",
+    prompt: input.prompt || "",
+    lane: input.lane || "workspace",
+    label: input.label || "工作台首页",
+    href: input.href || "/ops",
+    query: input.query || null,
+    summary: input.summary || "",
+    impact: Array.isArray(input.impact) ? input.impact : [],
+    nextStep: input.nextStep || "Open target entry",
+    plan: input.plan || null,
+    actor: input.actor || "anonymous",
+    siteKey: input.siteKey || null,
+    execution: input.execution || null,
+    createdAt,
+    updatedAt: createdAt,
+    statusTimeline: [
+      {
+        label: "draft",
+        at: createdAt,
+        by: input.actor || "anonymous",
+        note: "created from AI ops workspace",
+      },
+    ],
+  };
+  changeRequests.set(record.id, record);
+  persist();
+  return record;
+}
+
+function transitionChangeRequest({ id, actor = "anonymous", nextStatus, note, patch } = {}) {
+  const current = getChangeRequest(id);
+  if (!current) return null;
+  const updated = {
+    ...current,
+    ...(patch && typeof patch === "object" ? patch : {}),
+    status: nextStatus || current.status,
+    updatedAt: now(),
+    statusTimeline: [
+      {
+        label: nextStatus || current.status,
+        at: now(),
+        by: actor,
+        note: note || null,
+      },
+      ...(Array.isArray(current.statusTimeline) ? current.statusTimeline : []),
+    ].slice(0, 20),
+  };
+  changeRequests.set(updated.id, updated);
+  persist();
+  return updated;
 }
 
 function fulfillmentRank(status) {
@@ -1862,16 +1935,21 @@ const {
 
 module.exports = {
   createEvent,
+  createChangeRequest,
+  createRepoChange,
   getOrderSnapshot,
   upsertOrderSnapshot,
   deleteEventsByIds,
+  getChangeRequest,
   listEvents,
+  listChangeRequests,
   listPlaybooks,
   getPlaybook,
   findPlaybookByKey,
   upsertPlaybook,
   applyPlaybook,
   transitionPlaybookApplication,
+  transitionChangeRequest,
   upsertAlertsFromMonitoring,
   upsertCustomerNotificationsFromMonitoring,
   listAlerts,

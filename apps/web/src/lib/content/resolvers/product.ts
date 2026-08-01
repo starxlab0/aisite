@@ -1,5 +1,7 @@
 import { getPublishedProductContentDraftBySlug } from "@/lib/control-plane/drafts";
 import { getProductContentBySlug } from "@/lib/cms/queries";
+import { fallbackProductContentBySlug } from "@/lib/content/fallback-localized-content";
+import { getCurrentSiteKey, matchesSiteScope } from "@/lib/content/site-scope";
 import type { ProductContent } from "@/types/product";
 import type { ControlPlaneDraftRecord, ProductContentDraftPayload } from "@/types/draft";
 
@@ -21,6 +23,7 @@ function fromDraft(input: {
 
   const content: ProductContent = {
     productSlug: payload.productSlug ?? slug,
+    siteKeys: payload.siteKeys,
     title: payload.title,
     subtitle: payload.subtitle,
     shortDescription: payload.shortDescription,
@@ -30,6 +33,7 @@ function fromDraft(input: {
     whyItFeelsDifferent: payload.whyItFeelsDifferent,
     careInstructions: payload.careInstructions,
     whatsInBox: payload.whatsInBox,
+    locales: payload.locales,
   };
 
   return {
@@ -43,13 +47,14 @@ function fromDraft(input: {
 }
 
 export async function resolveProductContent(slug: string): Promise<ResolvedProductContent> {
+  const siteKey = getCurrentSiteKey();
   const draft = await getPublishedProductContentDraftBySlug(slug);
-  if (draft) {
+  if (draft && matchesSiteScope(draft.payload, siteKey)) {
     return fromDraft({ slug, draft });
   }
 
   const sanity = await getProductContentBySlug(slug);
-  if (sanity) {
+  if (sanity && matchesSiteScope(sanity, siteKey)) {
     return {
       source: "sanity",
       content: sanity,
@@ -58,6 +63,8 @@ export async function resolveProductContent(slug: string): Promise<ResolvedProdu
 
   return {
     source: "fallback",
-    content: null,
+    content: matchesSiteScope(fallbackProductContentBySlug[slug], siteKey)
+      ? fallbackProductContentBySlug[slug] ?? null
+      : null,
   };
 }

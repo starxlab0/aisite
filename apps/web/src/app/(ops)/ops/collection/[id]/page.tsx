@@ -21,6 +21,8 @@ import {
   resolveRecommendation,
 } from "@/lib/control-plane/ops";
 import { getDiffSections } from "@/lib/control-plane/ops-diff";
+import { parseCollectionCtaLinks, parseMultilineList } from "@/lib/control-plane/collection-draft-form";
+import { listAvailableSiteKeys } from "@/lib/site/config";
 import { PublishResultPanel } from "../../components/publish-result-panel";
 import { GovernanceBadge, governanceToneClass, proposalStatusMeta, repoChangeMeta } from "../../components/governance-ui";
 
@@ -135,6 +137,7 @@ export default async function OpsCollectionDetailPage({ params, searchParams }: 
   const canManageRecommendations = authStatus.capabilities.includes("manage_recommendations");
   const canCaptureSignalsSnapshot = authStatus.capabilities.includes("capture_signals_snapshot");
   const basePath = `/ops/collection/${id}`;
+  const availableSiteKeys = listAvailableSiteKeys();
   const detailPath = (extra?: Record<string, string | undefined>) => {
     const params = new URLSearchParams();
     if (activeDraft?.id) params.set("draft", activeDraft.id);
@@ -366,6 +369,9 @@ export default async function OpsCollectionDetailPage({ params, searchParams }: 
     const heroTitle = String(formData.get("heroTitle") ?? "").trim();
     const heroSummary = String(formData.get("heroSummary") ?? "").trim();
     const internalLinksRaw = String(formData.get("internalLinks") ?? "").trim();
+    const featuredProductSlugsRaw = String(formData.get("featuredProductSlugs") ?? "").trim();
+    const ctaLinksRaw = String(formData.get("ctaLinks") ?? "").trim();
+    const siteKeys = parseMultilineList(String(formData.get("siteKeys") ?? ""));
 
     const sections = (activeDraft.payload?.sections ?? []).map((section: any, index: number) => {
       const title = String(formData.get(`section_title_${index}`) ?? section.title ?? "").trim();
@@ -391,6 +397,7 @@ export default async function OpsCollectionDetailPage({ params, searchParams }: 
     }
 
     const patch: Record<string, unknown> = {};
+    patch.siteKeys = siteKeys;
     patch.hero = {
       ...(activeDraft.payload?.hero ?? {}),
       ...(heroTitle ? { title: heroTitle } : null),
@@ -399,11 +406,12 @@ export default async function OpsCollectionDetailPage({ params, searchParams }: 
     patch.sections = sections;
 
     if (internalLinksRaw) {
-      patch.internalLinks = internalLinksRaw
-        .split("\n")
-        .map((x) => x.trim())
-        .filter(Boolean);
+      patch.internalLinks = parseMultilineList(internalLinksRaw);
     }
+
+    patch.featuredProductSlugs = parseMultilineList(featuredProductSlugsRaw);
+
+    patch.ctaLinks = parseCollectionCtaLinks(ctaLinksRaw);
 
     try {
       await updateOpsDraft(activeDraft.id, patch);
@@ -667,6 +675,16 @@ export default async function OpsCollectionDetailPage({ params, searchParams }: 
           {activeDraft ? (
             <form action={onSaveDraft} className="mt-4 space-y-4">
               <div>
+                <label className="text-xs font-medium text-zinc-700">Applicable sites (one per line)</label>
+                <textarea
+                  name="siteKeys"
+                  defaultValue={(activeDraft.payload?.siteKeys ?? []).join("\n")}
+                  className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                  rows={3}
+                />
+                <p className="mt-1 text-xs text-zinc-500">可用站点：{availableSiteKeys.join(" / ")}。留空表示所有站点可见。</p>
+              </div>
+              <div>
                 <label className="text-xs font-medium text-zinc-700">Hero title</label>
                 <input
                   name="heroTitle"
@@ -757,6 +775,30 @@ export default async function OpsCollectionDetailPage({ params, searchParams }: 
                   className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
                   rows={4}
                 />
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-zinc-700">Featured product slugs (one per line)</label>
+                <textarea
+                  name="featuredProductSlugs"
+                  defaultValue={(activeDraft.payload?.featuredProductSlugs ?? []).join("\n")}
+                  className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                  rows={4}
+                />
+                <p className="mt-1 text-xs text-zinc-500">如果填写，前台 collection 页会优先按这里的 slug 顺序展示商品。</p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-zinc-700">CTA links (one per line: href | label)</label>
+                <textarea
+                  name="ctaLinks"
+                  defaultValue={(activeDraft.payload?.ctaLinks ?? [])
+                    .map((item: any) => `${item.href ?? ""} | ${item.label ?? ""}`)
+                    .join("\n")}
+                  className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                  rows={4}
+                />
+                <p className="mt-1 text-xs text-zinc-500">例如：`/quiz?src=collection-first-time | 先做问答`</p>
               </div>
 
               <button disabled={!canManageContent} className="rounded-lg bg-zinc-900 px-3 py-2 text-sm text-white disabled:opacity-50" type="submit">

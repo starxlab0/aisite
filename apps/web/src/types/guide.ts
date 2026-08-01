@@ -1,3 +1,5 @@
+import type { LocalizedByLocale } from "@/types/i18n";
+
 export type GuideCategory =
   | "buying-guide"
   | "care"
@@ -7,6 +9,7 @@ export type GuideCategory =
 
 export type GuideArticle = {
   slug: string;
+  siteKeys?: string[];
   title: string;
   excerpt: string;
   coverImage?: string;
@@ -18,4 +21,13 @@ export type GuideArticle = {
     title?: string;
     description?: string;
   };
+  locales?: LocalizedByLocale<{
+    title?: string;
+    excerpt?: string;
+    body?: unknown[];
+    seo?: {
+      title?: string;
+      description?: string;
+    };
+  }>;
 };
