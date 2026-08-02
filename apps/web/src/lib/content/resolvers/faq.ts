@@ -1,11 +1,14 @@
 import { getFaqItems } from "@/lib/cms/queries";
 import { getPublishedFaqDrafts } from "@/lib/control-plane/drafts";
+import { fallbackFaqContent } from "@/lib/content/fallback-localized-content";
+import { filterBySiteScope, getCurrentSiteKey, matchesSiteScope } from "@/lib/content/site-scope";
 import type { ControlPlaneDraftRecord, FaqDraftPayload } from "@/types/draft";
 import type { SanityFaqItem } from "@/lib/cms/queries";
 
 export type ResolvedFaqGroup = {
   source: "sanity-faqItem" | "control-plane-draft";
   title: string;
+  siteKeys?: string[];
   contentRef: string;
   targetPath: string;
   items: Array<{
@@ -13,6 +16,16 @@ export type ResolvedFaqGroup = {
     question: string;
     answer: string;
     category?: string;
+    locales?: {
+      en?: {
+        question?: string;
+        answer?: string;
+      };
+      zh?: {
+        question?: string;
+        answer?: string;
+      };
+    };
   }>;
 };
 
@@ -41,6 +54,7 @@ function buildGroupsFromSanity(items: SanityFaqItem[]): ResolvedFaqGroup[] {
       ({
         source: "sanity-faqItem",
         title: targetType === "global" ? "FAQ" : `FAQ: ${targetId}`,
+        siteKeys: item.siteKeys,
         contentRef: "sanity:faqItem",
         targetPath: resolveTargetPath(item.targetType, item.targetId),
         items: [],
@@ -51,6 +65,7 @@ function buildGroupsFromSanity(items: SanityFaqItem[]): ResolvedFaqGroup[] {
       question: item.question,
       answer: item.answer,
       category: item.category,
+      locales: item.locales,
     });
 
     map.set(key, group);
@@ -60,26 +75,25 @@ function buildGroupsFromSanity(items: SanityFaqItem[]): ResolvedFaqGroup[] {
 }
 
 export async function resolveFaqContent(): Promise<ResolvedFaqContent> {
+  const siteKey = getCurrentSiteKey();
   const sanityItems = await getFaqItems();
   if (sanityItems.length > 0) {
     return {
       source: "sanity-faqItem",
-      groups: buildGroupsFromSanity(sanityItems),
+      groups: buildGroupsFromSanity(filterBySiteScope(sanityItems, siteKey)),
     };
   }
 
   const drafts = await getPublishedFaqDrafts();
   if (drafts.length === 0) {
-    return {
-      source: "fallback",
-      groups: [],
-    };
+    return fallbackFaqContent;
   }
 
   const groups: ResolvedFaqGroup[] = drafts.map(
     (draft: ControlPlaneDraftRecord<FaqDraftPayload>) => ({
       source: "control-plane-draft",
       title: draft.payload.title,
+      siteKeys: draft.payload.siteKeys,
       contentRef: draft.contentRef,
       targetPath: draft.targetPath,
       items: draft.payload.items.map((item) => ({
@@ -87,12 +101,13 @@ export async function resolveFaqContent(): Promise<ResolvedFaqContent> {
         question: item.question,
         answer: item.answer,
         category: item.intent,
+        locales: item.locales,
       })),
     }),
   );
 
   return {
     source: "control-plane-draft",
-    groups,
+    groups: groups.filter((group) => matchesSiteScope(group, siteKey)),
   };
 }

@@ -1,4 +1,5 @@
 import { envServer } from "@/lib/env/server";
+import { getCurrentSiteKey, matchesSiteScope } from "@/lib/content/site-scope";
 import type {
   CollectionPageDraftPayload,
   ControlPlaneDraftRecord,
@@ -55,7 +56,8 @@ export async function getPublishedCollectionDraftBySlug(
     status: "published",
   });
 
-  return drafts[0] ?? null;
+  const siteKey = getCurrentSiteKey();
+  return drafts.find((draft) => matchesSiteScope(draft.payload, siteKey)) ?? drafts[0] ?? null;
 }
 
 export async function getPublishedFaqDrafts(): Promise<

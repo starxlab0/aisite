@@ -1,6 +1,6 @@
 import overrides from "./repo-change-overrides.json";
 
-type RepoChangeSeoOverride = {
+export type RepoChangeSeoOverride = {
   title?: string;
   description?: string;
   canonical?: string;

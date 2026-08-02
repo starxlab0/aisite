@@ -2,12 +2,16 @@
 
 import { FormEvent, useState } from "react";
 import { track } from "@/lib/analytics/events";
+import { getLocalizedCopy } from "@/lib/site/copy";
+import type { SupportedLocaleKey } from "@/lib/site/locale-routing";
 
 type Props = {
   brandName: string;
+  localeKey: SupportedLocaleKey;
 };
 
-export function FooterNewsletter({ brandName }: Props) {
+export function FooterNewsletter({ brandName, localeKey }: Props) {
+  const copy = getLocalizedCopy(localeKey).newsletter;
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<"idle" | "submitting" | "success" | "error">("idle");
   const [message, setMessage] = useState<string | null>(null);
@@ -17,7 +21,7 @@ export function FooterNewsletter({ brandName }: Props) {
     const normalizedEmail = email.trim().toLowerCase();
     if (!normalizedEmail) {
       setStatus("error");
-      setMessage("请输入邮箱地址。");
+      setMessage(copy.emptyEmail);
       return;
     }
 
@@ -38,7 +42,7 @@ export function FooterNewsletter({ brandName }: Props) {
 
       if (!response.ok || !json?.ok) {
         setStatus("error");
-        setMessage("订阅失败，请稍后再试。");
+        setMessage(copy.submitError);
         return;
       }
 
@@ -48,19 +52,19 @@ export function FooterNewsletter({ brandName }: Props) {
         placement: "site_footer",
       });
       setStatus("success");
-      setMessage(`已订阅 ${brandName} 更新。`);
+      setMessage(copy.submitSuccess(brandName));
       setEmail("");
     } catch {
       setStatus("error");
-      setMessage("订阅失败，请稍后再试。");
+      setMessage(copy.submitError);
     }
   }
 
   return (
     <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 md:max-w-md">
-      <p className="text-sm font-medium text-zinc-900">订阅更新</p>
+      <p className="text-sm font-medium text-zinc-900">{copy.title}</p>
       <p className="mt-1 text-sm text-zinc-600">
-        接收新品、导购和发货相关更新，不会高频打扰。
+        {copy.description}
       </p>
       <form className="mt-3 flex flex-col gap-3 sm:flex-row" onSubmit={onSubmit}>
         <input
@@ -77,7 +81,7 @@ export function FooterNewsletter({ brandName }: Props) {
           disabled={status === "submitting"}
           className="inline-flex h-11 items-center justify-center rounded-full bg-zinc-900 px-5 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-400"
         >
-          {status === "submitting" ? "提交中..." : "订阅"}
+          {status === "submitting" ? copy.submitPending : copy.submitIdle}
         </button>
       </form>
       {message ? (

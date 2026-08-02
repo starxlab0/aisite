@@ -18,6 +18,7 @@ function emptyState() {
   return {
     drafts: [],
     events: [],
+    changeRequests: [],
     previewTokens: [],
     repoChanges: [],
     alerts: [],
@@ -44,6 +45,7 @@ function loadState() {
     return {
       drafts: Array.isArray(parsed.drafts) ? parsed.drafts : [],
       events: Array.isArray(parsed.events) ? parsed.events : [],
+      changeRequests: Array.isArray(parsed.changeRequests) ? parsed.changeRequests : [],
       previewTokens: Array.isArray(parsed.previewTokens) ? parsed.previewTokens : [],
       repoChanges: Array.isArray(parsed.repoChanges) ? parsed.repoChanges : [],
       alerts: Array.isArray(parsed.alerts) ? parsed.alerts : [],

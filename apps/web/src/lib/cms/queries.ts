@@ -13,7 +13,24 @@ export async function getProductContentBySlug(
   slug: string,
 ): Promise<ProductContent | null> {
   if (!sanityClient) return null;
-  const query = `*[_type == "productContent" && productSlug == $slug][0]`;
+  const query = `*[_type == "productContent" && productSlug == $slug][0]{
+    productSlug,
+    siteKeys,
+    title,
+    subtitle,
+    shortDescription,
+    hero,
+    keyBenefits,
+    whoItsFor,
+    whyItFeelsDifferent,
+    appControlHighlights,
+    careInstructions,
+    whatsInBox,
+    relatedProducts,
+    relatedGuides,
+    seo,
+    locales
+  }`;
   return sanityClient.fetch(query, { slug });
 }
 
@@ -23,6 +40,7 @@ export async function getCollectionPageBySlug(
   if (!sanityClient) return null;
   const query = `*[_type == "collectionPage" && slug.current == $slug][0]{
     "slug": slug.current,
+    siteKeys,
     title,
     subtitle,
     description,
@@ -40,6 +58,7 @@ export async function getGuideBySlug(slug: string): Promise<GuideArticle | null>
   if (!sanityClient) return null;
   const query = `*[_type == "guideArticle" && slug.current == $slug][0]{
     "slug": slug.current,
+    siteKeys,
     title,
     excerpt,
     coverImage,
@@ -47,7 +66,8 @@ export async function getGuideBySlug(slug: string): Promise<GuideArticle | null>
     body,
     relatedProductSlugs,
     relatedCollectionSlugs,
-    seo
+    seo,
+    locales
   }`;
   return sanityClient.fetch(query, { slug });
 }
@@ -56,6 +76,7 @@ export async function getGuides(): Promise<GuideArticle[]> {
   if (!sanityClient) return [];
   const query = `*[_type == "guideArticle"] | order(updatedAt desc){
     "slug": slug.current,
+    siteKeys,
     title,
     excerpt,
     coverImage,
@@ -63,7 +84,8 @@ export async function getGuides(): Promise<GuideArticle[]> {
     body,
     relatedProductSlugs,
     relatedCollectionSlugs,
-    seo
+    seo,
+    locales
   }`;
   return sanityClient.fetch(query);
 }
@@ -93,11 +115,13 @@ export async function getFaqItems(): Promise<SanityFaqItem[]> {
   if (!sanityClient) return [];
   const query = `*[_type == "faqItem"]{
     _id,
+    siteKeys,
     question,
     answer,
     category,
     targetType,
-    targetId
+    targetId,
+    locales
   } | order(targetType asc, targetId asc)`;
   return sanityClient.fetch(query);
 }

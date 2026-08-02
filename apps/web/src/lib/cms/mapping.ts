@@ -1,4 +1,6 @@
 import type { CommerceProduct, ProductContent, ProductPageViewModel } from "@/types/product";
+import { getLocalizedCopy } from "@/lib/site/copy";
+import type { SupportedLocaleKey } from "@/lib/site/locale-routing";
 
 function truthyBadges(p: CommerceProduct): string[] {
   const badges: string[] = [];
@@ -11,17 +13,20 @@ function truthyBadges(p: CommerceProduct): string[] {
   return badges;
 }
 
-function formatWaterproof(waterproof: CommerceProduct["waterproof"]) {
+function formatWaterproof(waterproof: CommerceProduct["waterproof"], localeKey: SupportedLocaleKey) {
+  const copy = getLocalizedCopy(localeKey).product;
   if (!waterproof) return null;
-  if (waterproof === "none") return "不支持防水";
+  if (waterproof === "none") return copy.specLabels.notWaterproof;
   return waterproof;
 }
 
 export function toProductPageViewModel(input: {
   commerce: CommerceProduct;
   content?: ProductContent | null;
+  localeKey: SupportedLocaleKey;
 }): ProductPageViewModel {
-  const { commerce, content } = input;
+  const { commerce, content, localeKey } = input;
+  const copy = getLocalizedCopy(localeKey).product;
 
   const media = [
     ...(content?.hero?.media ?? []),
@@ -47,19 +52,19 @@ export function toProductPageViewModel(input: {
     whoItsFor: content?.whoItsFor ?? [],
     whyItFeelsDifferent: content?.whyItFeelsDifferent ?? [],
     specs: [
-      commerce.material ? { label: "材质", value: commerce.material } : null,
-      formatWaterproof(commerce.waterproof)
-        ? { label: "防水", value: formatWaterproof(commerce.waterproof)! }
+      commerce.material ? { label: copy.specLabels.material, value: commerce.material } : null,
+      formatWaterproof(commerce.waterproof, localeKey)
+        ? { label: copy.specLabels.waterproof, value: formatWaterproof(commerce.waterproof, localeKey)! }
         : null,
       typeof commerce.runtimeMinutes === "number"
-        ? { label: "续航", value: `${commerce.runtimeMinutes} 分钟` }
+        ? { label: copy.specLabels.runtime, value: `${commerce.runtimeMinutes} ${copy.specLabels.minutes}` }
         : null,
       typeof commerce.chargeMinutes === "number"
-        ? { label: "充电", value: `${commerce.chargeMinutes} 分钟` }
+        ? { label: copy.specLabels.charge, value: `${commerce.chargeMinutes} ${copy.specLabels.minutes}` }
         : null,
-      commerce.sizeText ? { label: "尺寸", value: commerce.sizeText } : null,
+      commerce.sizeText ? { label: copy.specLabels.size, value: commerce.sizeText } : null,
       typeof commerce.weightGrams === "number"
-        ? { label: "重量", value: `${commerce.weightGrams} g` }
+        ? { label: copy.specLabels.weight, value: `${commerce.weightGrams} g` }
         : null,
     ].filter(Boolean) as Array<{ label: string; value: string }>,
     whatsInBox: content?.whatsInBox ?? [],

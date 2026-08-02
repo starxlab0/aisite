@@ -1,3 +1,5 @@
+import type { LocalizedByLocale } from "@/types/i18n";
+
 export type StimulationType =
   | "clitoral"
   | "licking"
@@ -12,6 +14,7 @@ export type CommerceProduct = {
   id: string;
   defaultVariantId?: string;
   slug: string;
+  siteKeys?: string[];
   name: string;
   status: "draft" | "published";
 
@@ -54,6 +57,7 @@ export type CommerceProduct = {
 
 export type ProductContent = {
   productSlug: string;
+  siteKeys?: string[];
   title: string;
   subtitle?: string;
   shortDescription?: string;
@@ -80,6 +84,28 @@ export type ProductContent = {
     description?: string;
     keywords?: string[];
   };
+  locales?: LocalizedByLocale<{
+    title?: string;
+    subtitle?: string;
+    shortDescription?: string;
+    hero?: {
+      eyebrow?: string;
+      headline?: string;
+      description?: string;
+      media?: string[];
+    };
+    keyBenefits?: string[];
+    whoItsFor?: string[];
+    whyItFeelsDifferent?: string[];
+    appControlHighlights?: string[];
+    careInstructions?: string[];
+    whatsInBox?: string[];
+    seo?: {
+      title?: string;
+      description?: string;
+      keywords?: string[];
+    };
+  }>;
 };
 
 export type ProductPageViewModel = {

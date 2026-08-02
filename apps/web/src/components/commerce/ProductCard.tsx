@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { buildLocalePath } from "@/lib/site/locale-routing";
+import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
 import { formatMoney } from "@/lib/utils/money";
 import type { CommerceProduct } from "@/types/product";
 
@@ -47,8 +49,9 @@ function waterproofLabel(product: CommerceProduct) {
   return "未标注";
 }
 
-export function ProductCard({ product, href, eyebrow, compact = false, plain = false }: ProductCardProps) {
-  const targetHref = href ?? `/product/${product.slug}`;
+export async function ProductCard({ product, href, eyebrow, compact = false, plain = false }: ProductCardProps) {
+  const localeKey = await getRequestLocaleKey();
+  const targetHref = href ?? buildLocalePath(`/product/${product.slug}`, localeKey);
   const badges = buildProductBadges(product);
   const content = (
     <>

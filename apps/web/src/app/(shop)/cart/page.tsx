@@ -5,9 +5,12 @@ import {
 } from "@/features/cart/actions";
 import { getCurrentCart } from "@/features/cart/server";
 import { getDisplayLineTotal } from "@/lib/commerce/cart-logic";
+import { buildLocalePath } from "@/lib/site/locale-routing";
+import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
 import { formatMoney } from "@/lib/utils/money";
 
 export default async function CartPage() {
+  const localeKey = await getRequestLocaleKey();
   const cart = await getCurrentCart();
   const itemCount = cart.items.reduce((sum, item) => sum + item.quantity, 0);
 
@@ -21,7 +24,7 @@ export default async function CartPage() {
             这里已经支持数量调整和删除商品。确认无误后，直接进入结账页完成支付。
           </p>
         </div>
-        <Link className="text-sm underline underline-offset-4" href="/shop">
+        <Link className="text-sm underline underline-offset-4" href={buildLocalePath("/shop", localeKey)}>
           继续选购
         </Link>
       </div>
@@ -47,7 +50,7 @@ export default async function CartPage() {
                       </p>
                       {item.productHandle ? (
                         <Link
-                          href={`/product/${item.productHandle}`}
+                          href={buildLocalePath(`/product/${item.productHandle}`, localeKey)}
                           className="mt-1 inline-block text-sm text-zinc-600 underline underline-offset-4"
                         >
                           返回商品页
@@ -104,7 +107,7 @@ export default async function CartPage() {
               <p className="text-lg font-medium text-zinc-900">购物车还是空的</p>
               <p className="mt-2 text-sm text-zinc-600">先去商店挑一件更合适的商品，再回来结账。</p>
               <Link
-                href="/shop"
+                href={buildLocalePath("/shop", localeKey)}
                 className="mt-5 inline-flex rounded-full bg-zinc-900 px-5 py-3 text-sm font-medium text-white hover:bg-zinc-800"
               >
                 去选购
@@ -136,7 +139,7 @@ export default async function CartPage() {
             </div>
           </dl>
             <Link
-              href={cart.items.length ? "/checkout" : "/shop"}
+              href={buildLocalePath(cart.items.length ? "/checkout" : "/shop", localeKey)}
               className="mt-6 inline-flex h-12 w-full items-center justify-center rounded-full bg-zinc-900 text-sm font-medium text-white hover:bg-zinc-800"
             >
               {cart.items.length ? "去结账" : "去选购"}
@@ -151,10 +154,10 @@ export default async function CartPage() {
               <li>下单前后都可联系客服</li>
             </ul>
             <div className="mt-5 grid gap-2 text-sm">
-              <Link className="underline underline-offset-4" href="/shipping">
+              <Link className="underline underline-offset-4" href={buildLocalePath("/shipping", localeKey)}>
                 配送说明
               </Link>
-              <Link className="underline underline-offset-4" href="/returns">
+              <Link className="underline underline-offset-4" href={buildLocalePath("/returns", localeKey)}>
                 退换政策
               </Link>
             </div>

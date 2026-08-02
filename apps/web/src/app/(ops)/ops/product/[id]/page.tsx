@@ -21,6 +21,7 @@ import {
   resolveRecommendation,
 } from "@/lib/control-plane/ops";
 import { getDiffSections } from "@/lib/control-plane/ops-diff";
+import { listAvailableSiteKeys } from "@/lib/site/config";
 import { PublishResultPanel } from "../../components/publish-result-panel";
 import { GovernanceBadge, governanceToneClass, proposalStatusMeta, repoChangeMeta } from "../../components/governance-ui";
 
@@ -135,6 +136,7 @@ export default async function OpsProductDetailPage({ params, searchParams }: Pro
   const canManageRecommendations = authStatus.capabilities.includes("manage_recommendations");
   const canCaptureSignalsSnapshot = authStatus.capabilities.includes("capture_signals_snapshot");
   const basePath = `/ops/product/${id}`;
+  const availableSiteKeys = listAvailableSiteKeys();
   const detailPath = (extra?: Record<string, string | undefined>) => {
     const params = new URLSearchParams();
     if (activeDraft?.id) params.set("draft", activeDraft.id);
@@ -389,6 +391,52 @@ export default async function OpsProductDetailPage({ params, searchParams }: Pro
         .filter(Boolean);
     });
 
+    patch.siteKeys = String(formData.get("siteKeys") ?? "")
+      .split("\n")
+      .map((x) => x.trim())
+      .filter(Boolean);
+
+    const localeFields = [
+      "title",
+      "subtitle",
+      "shortDescription",
+      "keyBenefits",
+      "whoItsFor",
+      "whyItFeelsDifferent",
+      "careInstructions",
+      "whatsInBox",
+    ] as const;
+    const existingLocales = activeDraft.payload?.locales ?? {};
+    const nextLocales: Record<string, any> = { ...existingLocales };
+
+    (["en", "zh"] as const).forEach((locale) => {
+      const nextLocale = { ...(existingLocales?.[locale] ?? {}) };
+      let changed = false;
+
+      localeFields.forEach((field) => {
+        const formKey = `${locale}_${field}`;
+        const raw = String(formData.get(formKey) ?? "").trim();
+        if (!raw) return;
+        if (listFields.includes(field as (typeof listFields)[number])) {
+          nextLocale[field] = raw
+            .split("\n")
+            .map((x) => x.trim())
+            .filter(Boolean);
+        } else {
+          nextLocale[field] = raw;
+        }
+        changed = true;
+      });
+
+      if (changed) {
+        nextLocales[locale] = nextLocale;
+      }
+    });
+
+    if (Object.keys(nextLocales).length) {
+      patch.locales = nextLocales;
+    }
+
     try {
       await updateOpsDraft(activeDraft.id, patch);
       redirect(`/ops/product/${id}?draft=${activeDraft.id}`);
@@ -636,6 +684,17 @@ export default async function OpsProductDetailPage({ params, searchParams }: Pro
               </div>
 
               <div>
+                <label className="text-xs font-medium text-zinc-700">Applicable sites (one per line)</label>
+                <textarea
+                  name="siteKeys"
+                  defaultValue={(activeDraft.payload?.siteKeys ?? []).join("\n")}
+                  className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                  rows={3}
+                />
+                <p className="mt-1 text-xs text-zinc-500">可用站点：{availableSiteKeys.join(" / ")}。留空表示所有站点可见。</p>
+              </div>
+
+              <div>
                 <label className="text-xs font-medium text-zinc-700">Short description</label>
                 <textarea
                   name="shortDescription"
@@ -695,6 +754,93 @@ export default async function OpsProductDetailPage({ params, searchParams }: Pro
                   className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
                   rows={5}
                 />
+              </div>
+
+              <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                <p className="text-sm font-medium text-zinc-900">Localized content</p>
+                <p className="mt-1 text-xs text-zinc-500">可选填写英文和中文版本；未填写的 locale 会继续回退默认字段。</p>
+                <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                  {(["en", "zh"] as const).map((locale) => {
+                    const localePayload = activeDraft.payload?.locales?.[locale] ?? {};
+                    return (
+                      <div key={locale} className="rounded-xl border border-zinc-200 bg-white p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">{locale}</p>
+                        <div className="mt-3 space-y-3">
+                          <div>
+                            <label className="text-xs font-medium text-zinc-700">Title</label>
+                            <input
+                              name={`${locale}_title`}
+                              defaultValue={localePayload.title ?? ""}
+                              className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-zinc-700">Subtitle</label>
+                            <input
+                              name={`${locale}_subtitle`}
+                              defaultValue={localePayload.subtitle ?? ""}
+                              className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-zinc-700">Short description</label>
+                            <textarea
+                              name={`${locale}_shortDescription`}
+                              defaultValue={localePayload.shortDescription ?? ""}
+                              className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                              rows={3}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-zinc-700">Key benefits (one per line)</label>
+                            <textarea
+                              name={`${locale}_keyBenefits`}
+                              defaultValue={(localePayload.keyBenefits ?? []).join("\n")}
+                              className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                              rows={4}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-zinc-700">Who it’s for (one per line)</label>
+                            <textarea
+                              name={`${locale}_whoItsFor`}
+                              defaultValue={(localePayload.whoItsFor ?? []).join("\n")}
+                              className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                              rows={4}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-zinc-700">Why it feels different (one per line)</label>
+                            <textarea
+                              name={`${locale}_whyItFeelsDifferent`}
+                              defaultValue={(localePayload.whyItFeelsDifferent ?? []).join("\n")}
+                              className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                              rows={4}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-zinc-700">Care instructions (one per line)</label>
+                            <textarea
+                              name={`${locale}_careInstructions`}
+                              defaultValue={(localePayload.careInstructions ?? []).join("\n")}
+                              className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                              rows={4}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-zinc-700">What’s in box (one per line)</label>
+                            <textarea
+                              name={`${locale}_whatsInBox`}
+                              defaultValue={(localePayload.whatsInBox ?? []).join("\n")}
+                              className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                              rows={4}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
               <button disabled={!canManageContent} className="rounded-lg bg-zinc-900 px-3 py-2 text-sm text-white disabled:opacity-50" type="submit">

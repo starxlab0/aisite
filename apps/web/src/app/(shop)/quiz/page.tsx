@@ -1,5 +1,10 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { listProducts } from "@/lib/commerce/products";
+import { getLocalizedCopy } from "@/lib/site/copy";
+import { getSiteConfigForLocale, isSiteFeatureEnabled } from "@/lib/site/config";
+import { buildLocalePath } from "@/lib/site/locale-routing";
+import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
 import { AiQuiz } from "./quiz-ui";
 
 type Props = {
@@ -7,26 +12,38 @@ type Props = {
 };
 
 export default async function QuizPage({ searchParams }: Props) {
+  const localeKey = await getRequestLocaleKey();
+  if (!isSiteFeatureEnabled("quiz", localeKey)) notFound();
+  const site = getSiteConfigForLocale(localeKey);
+  const copy = getLocalizedCopy(localeKey).quiz;
   const sp = (await searchParams) ?? {};
   const src = typeof sp.src === "string" ? sp.src : "direct";
   const product = typeof sp.product === "string" ? sp.product : null;
   const products = await listProducts();
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-14">
-      <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Find Your Match</h1>
+      <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">{copy.pageTitle}</h1>
       <p className="mt-4 text-zinc-600">
-        如果你不想一开始就在商品列表里反复横跳，这里会先按第一次购买、是否偏好 wearable、
-        是否想要 App Control 和预算范围，帮你快速缩小到更接近的几款。
+        {copy.pageDescription}
       </p>
 
-      <AiQuiz source={src} sourceProductSlug={product} products={products} />
+      <AiQuiz
+        source={src}
+        sourceProductSlug={product}
+        products={products}
+        localeKey={localeKey}
+        siteFeatures={{
+          bundles: site.site.features.bundles,
+          appControl: site.site.features.appControl,
+        }}
+      />
 
       <div className="mt-10 flex flex-wrap gap-4 text-sm">
-        <Link className="underline underline-offset-4" href="/collection/first-time">
-          Browse first-time picks
+        <Link className="underline underline-offset-4" href={buildLocalePath("/collection/first-time", localeKey)}>
+          {copy.firstTimeCta}
         </Link>
-        <Link className="underline underline-offset-4" href="/shop">
-          Shop all
+        <Link className="underline underline-offset-4" href={buildLocalePath("/shop", localeKey)}>
+          {copy.shopAllCta}
         </Link>
       </div>
     </div>

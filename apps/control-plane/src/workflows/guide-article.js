@@ -131,6 +131,14 @@ function generateGuideArticleDraft({ targetId, recommendation } = {}) {
           : "给第一次购买者的 buying guide：先按场景缩小范围，再进入 collection、product 和 FAQ 做下一步判断。",
         keywords: ["第一次买怎么选", "buying guide", "first-time collection"],
       },
+      locales: {
+        en: {
+          seo: {},
+        },
+        zh: {
+          seo: {},
+        },
+      },
       schemaHints: ["Article", "BreadcrumbList", ...(geoMode ? ["HowTo"] : [])],
       structuredData: geoMode
         ? [

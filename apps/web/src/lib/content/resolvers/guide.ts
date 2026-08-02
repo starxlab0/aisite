@@ -1,5 +1,7 @@
 import { getPublishedGuideDraftBySlug, getPublishedGuideDrafts } from "@/lib/control-plane/drafts";
 import { getGuideBySlug, getGuides } from "@/lib/cms/queries";
+import { fallbackGuideBySlug } from "@/lib/content/fallback-localized-content";
+import { filterBySiteScope, getCurrentSiteKey, matchesSiteScope } from "@/lib/content/site-scope";
 import type { ControlPlaneDraftRecord, GuideArticleDraftPayload } from "@/types/draft";
 import type { GuideArticle } from "@/types/guide";
 
@@ -18,6 +20,7 @@ function fromDraft(draft: ControlPlaneDraftRecord<GuideArticleDraftPayload>): Re
     source: "control-plane-draft",
     article: {
       slug: payload.slug,
+      siteKeys: payload.siteKeys,
       title: payload.title,
       excerpt: payload.excerpt,
       category: "buying-guide",
@@ -25,6 +28,7 @@ function fromDraft(draft: ControlPlaneDraftRecord<GuideArticleDraftPayload>): Re
       relatedProductSlugs: payload.relatedProductSlugs,
       relatedCollectionSlugs: payload.relatedCollectionSlugs,
       seo: payload.seo,
+      locales: payload.locales,
     },
     debug: {
       contentRef: draft.contentRef,
@@ -36,7 +40,7 @@ function fromDraft(draft: ControlPlaneDraftRecord<GuideArticleDraftPayload>): Re
 function fallbackGuide(slug: string): ResolvedGuideArticle {
   return {
     source: "fallback",
-    article: {
+    article: fallbackGuideBySlug[slug] ?? {
       slug,
       title: `Guide: ${slug}`,
       excerpt: "Guide 内容骨架：后续由 Sanity 或 control-plane 已发布 guide draft 驱动。",
@@ -49,13 +53,14 @@ function fallbackGuide(slug: string): ResolvedGuideArticle {
 }
 
 export async function resolveGuideBySlug(slug: string): Promise<ResolvedGuideArticle> {
+  const siteKey = getCurrentSiteKey();
   const draft = await getPublishedGuideDraftBySlug(slug);
-  if (draft) {
+  if (draft && matchesSiteScope(draft.payload, siteKey)) {
     return fromDraft(draft);
   }
 
   const sanity = await getGuideBySlug(slug);
-  if (sanity) {
+  if (sanity && matchesSiteScope(sanity, siteKey)) {
     return {
       source: "sanity",
       article: sanity,
@@ -69,11 +74,15 @@ export async function resolveGuideList(): Promise<{
   source: "control-plane-draft" | "sanity" | "fallback";
   items: GuideArticle[];
 }> {
+  const siteKey = getCurrentSiteKey();
   const drafts = await getPublishedGuideDrafts();
   if (drafts.length > 0) {
     return {
       source: "control-plane-draft",
-      items: drafts.map((draft) => fromDraft(draft).article!).filter(Boolean),
+      items: drafts
+        .filter((draft) => matchesSiteScope(draft.payload, siteKey))
+        .map((draft) => fromDraft(draft).article!)
+        .filter(Boolean),
     };
   }
 
@@ -81,23 +90,12 @@ export async function resolveGuideList(): Promise<{
   if (sanity.length > 0) {
     return {
       source: "sanity",
-      items: sanity,
+      items: filterBySiteScope(sanity, siteKey),
     };
   }
 
   return {
     source: "fallback",
-    items: [
-      {
-        slug: "how-to-choose",
-        title: "第一次买怎么选",
-        excerpt: "从场景、隐私、连接与清洁四个维度，帮助第一次购买者缩小范围。",
-        category: "buying-guide",
-        body: [],
-        relatedProductSlugs: ["kokocang-x"],
-        relatedCollectionSlugs: ["first-time"],
-      },
-    ],
+    items: filterBySiteScope(Object.values(fallbackGuideBySlug), siteKey),
   };
 }
-

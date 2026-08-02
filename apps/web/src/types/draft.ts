@@ -1,3 +1,5 @@
+import type { LocalizedByLocale } from "@/types/i18n";
+
 export type ControlPlaneDraftRecord<TPayload = unknown> = {
   id: string;
   schemaType: string;
@@ -14,6 +16,7 @@ export type ControlPlaneDraftRecord<TPayload = unknown> = {
 };
 
 export type CollectionPageDraftPayload = {
+  siteKeys?: string[];
   hero: {
     title: string;
     summary: string;
@@ -24,15 +27,25 @@ export type CollectionPageDraftPayload = {
     content: string;
   }>;
   internalLinks: string[];
+  featuredProductSlugs?: string[];
+  ctaLinks?: Array<{
+    href: string;
+    label: string;
+  }>;
   authoringNotes?: string[];
 };
 
 export type FaqDraftPayload = {
   title: string;
+  siteKeys?: string[];
   items: Array<{
     id: string;
     question: string;
     answer: string;
+    locales?: LocalizedByLocale<{
+      question?: string;
+      answer?: string;
+    }>;
     intent?: string;
     sourceAssetIds?: string[];
     needsHumanReview?: boolean;
@@ -41,6 +54,7 @@ export type FaqDraftPayload = {
 };
 
 export type ProductContentDraftPayload = {
+  siteKeys?: string[];
   productSlug: string;
   title: string;
   subtitle?: string;
@@ -56,9 +70,31 @@ export type ProductContentDraftPayload = {
   whyItFeelsDifferent?: string[];
   careInstructions?: string[];
   whatsInBox?: string[];
+  locales?: LocalizedByLocale<{
+    title?: string;
+    subtitle?: string;
+    shortDescription?: string;
+    hero?: {
+      eyebrow?: string;
+      headline?: string;
+      description?: string;
+      media?: string[];
+    };
+    keyBenefits?: string[];
+    whoItsFor?: string[];
+    whyItFeelsDifferent?: string[];
+    careInstructions?: string[];
+    whatsInBox?: string[];
+    seo?: {
+      title?: string;
+      description?: string;
+      keywords?: string[];
+    };
+  }>;
 };
 
 export type GuideArticleDraftPayload = {
+  siteKeys?: string[];
   slug: string;
   title: string;
   excerpt: string;
@@ -74,4 +110,14 @@ export type GuideArticleDraftPayload = {
     description?: string;
     keywords?: string[];
   };
+  locales?: LocalizedByLocale<{
+    title?: string;
+    excerpt?: string;
+    body?: string[];
+    seo?: {
+      title?: string;
+      description?: string;
+      keywords?: string[];
+    };
+  }>;
 };

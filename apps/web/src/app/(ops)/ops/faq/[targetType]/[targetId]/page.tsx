@@ -17,6 +17,7 @@ import {
   updateOpsDraft,
 } from "@/lib/control-plane/ops";
 import { getDiffSections } from "@/lib/control-plane/ops-diff";
+import { listAvailableSiteKeys } from "@/lib/site/config";
 import { PublishResultPanel } from "../../../components/publish-result-panel";
 import { GovernanceBadge, governanceToneClass, proposalStatusMeta, repoChangeMeta } from "../../../components/governance-ui";
 
@@ -128,6 +129,7 @@ export default async function OpsFaqDetailPage({ params, searchParams }: Props) 
   const canPublishContent = authStatus.capabilities.includes("publish_content");
   const canManageRecommendations = authStatus.capabilities.includes("manage_recommendations");
   const basePath = `/ops/faq/${targetType}/${targetId}`;
+  const availableSiteKeys = listAvailableSiteKeys();
   const detailPath = (extra?: Record<string, string | undefined>) => {
     const params = new URLSearchParams();
     if (activeDraft?.id) params.set("draft", activeDraft.id);
@@ -263,17 +265,34 @@ export default async function OpsFaqDetailPage({ params, searchParams }: Props) 
     const title = String(formData.get("title") ?? "").trim();
     const patch: Record<string, unknown> = {};
     if (title) patch.title = title;
+    patch.siteKeys = String(formData.get("siteKeys") ?? "")
+      .split("\n")
+      .map((x) => x.trim())
+      .filter(Boolean);
 
     const existingItems = activeDraft.payload?.items ?? [];
     const items = existingItems.map((item: any, index: number) => {
       const question = String(formData.get(`q_${index}`) ?? item.question ?? "").trim();
       const answer = String(formData.get(`a_${index}`) ?? item.answer ?? "").trim();
       const category = String(formData.get(`c_${index}`) ?? item.intent ?? "").trim();
+      const locales = { ...(item.locales ?? {}) } as Record<string, any>;
+      (["en", "zh"] as const).forEach((locale) => {
+        const localeQuestion = String(formData.get(`q_${locale}_${index}`) ?? "").trim();
+        const localeAnswer = String(formData.get(`a_${locale}_${index}`) ?? "").trim();
+        if (localeQuestion || localeAnswer) {
+          locales[locale] = {
+            ...(locales[locale] ?? {}),
+            ...(localeQuestion ? { question: localeQuestion } : {}),
+            ...(localeAnswer ? { answer: localeAnswer } : {}),
+          };
+        }
+      });
       return {
         ...item,
         question,
         answer,
         intent: category || item.intent,
+        locales,
       };
     });
 
@@ -719,6 +738,17 @@ export default async function OpsFaqDetailPage({ params, searchParams }: Props) 
               </div>
 
               <div>
+                <label className="text-xs font-medium text-zinc-700">Applicable sites (one per line)</label>
+                <textarea
+                  name="siteKeys"
+                  defaultValue={(activeDraft.payload?.siteKeys ?? []).join("\n")}
+                  className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                  rows={3}
+                />
+                <p className="mt-1 text-xs text-zinc-500">可用站点：{availableSiteKeys.join(" / ")}。留空表示所有站点可见。</p>
+              </div>
+
+              <div>
                 <label className="text-xs font-medium text-zinc-700">Items</label>
                 <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs text-zinc-500">支持新增、删除与上下移动；question/answer 必填。</p>
@@ -783,6 +813,29 @@ export default async function OpsFaqDetailPage({ params, searchParams }: Props) 
                         defaultValue={item.intent ?? ""}
                         className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
                       />
+                      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                        {(["en", "zh"] as const).map((locale) => {
+                          const localeItem = item.locales?.[locale] ?? {};
+                          return (
+                            <div key={locale} className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-500">{locale}</p>
+                              <label className="mt-3 block text-xs font-medium text-zinc-700">Question</label>
+                              <input
+                                name={`q_${locale}_${index}`}
+                                defaultValue={localeItem.question ?? ""}
+                                className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                              />
+                              <label className="mt-3 block text-xs font-medium text-zinc-700">Answer</label>
+                              <textarea
+                                name={`a_${locale}_${index}`}
+                                defaultValue={localeItem.answer ?? ""}
+                                className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                                rows={4}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   ))}
                 </div>

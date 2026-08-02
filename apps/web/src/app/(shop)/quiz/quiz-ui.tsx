@@ -1,11 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { TrackedLink } from "@/components/signals/tracked-link";
 import { TrackedSubmitButton } from "@/components/signals/tracked-submit-button";
 import { envClient } from "@/lib/env/client";
 import { getExperimentBucket } from "@/lib/experiments/ab";
 import { writeAttributionContext } from "@/components/signals/attribution";
+import { getLocalizedCopy } from "@/lib/site/copy";
+import { buildLocalePath, getLocaleKeyFromPathname } from "@/lib/site/locale-routing";
+import type { SupportedLocaleKey } from "@/lib/site/locale-routing";
 
 type Product = {
   defaultVariantId?: string;
@@ -22,6 +26,11 @@ type Props = {
   source: string;
   sourceProductSlug: string | null;
   products: Product[];
+  localeKey?: SupportedLocaleKey;
+  siteFeatures?: {
+    bundles: boolean;
+    appControl: boolean;
+  };
 };
 
 type Answer = {
@@ -53,15 +62,16 @@ function track(eventType: "view" | "cta", payload: Record<string, unknown>) {
   } catch {}
 }
 
-function budgetRange(budget: Answer["budget"]) {
+function budgetRange(budget: Answer["budget"], localeKey: SupportedLocaleKey) {
+  const quizCopy = getLocalizedCopy(localeKey).quiz;
   if (budget === "low") return { min: 0, max: 5000, label: "≤ $50" };
   if (budget === "mid") return { min: 5000, max: 10000, label: "$50–$100" };
   if (budget === "high") return { min: 10000, max: Infinity, label: "≥ $100" };
-  return { min: 0, max: Infinity, label: "any" };
+  return { min: 0, max: Infinity, label: quizCopy.budgetAny };
 }
 
-function pickRecommendations(products: Product[], answer: Answer) {
-  const range = budgetRange(answer.budget);
+function pickRecommendations(products: Product[], answer: Answer, localeKey: SupportedLocaleKey) {
+  const range = budgetRange(answer.budget, localeKey);
   const scored = products.map((p) => {
     let score = 0;
     if (answer.wearable === "yes" && p.wearable) score += 3;
@@ -87,94 +97,98 @@ function pickRecommendations(products: Product[], answer: Answer) {
   return scored.slice(0, 3).map((x) => x.p);
 }
 
-function reasonTags(product: Product, answer: Answer) {
+function reasonTags(product: Product, answer: Answer, localeKey: SupportedLocaleKey) {
+  const quizCopy = getLocalizedCopy(localeKey).quiz;
   const tags: string[] = [];
-  if (answer.wearable === "yes" && product.wearable) tags.push("适合 wearable 偏好");
-  if (answer.dual === "yes" && (product.stimulationType || []).includes("dual")) tags.push("包含 dual stimulation");
-  if (answer.firstTime === "yes" && !product.appControl) tags.push("更适合 first-time 入门");
-  if (answer.control === "app" && product.appControl) tags.push("支持 App Control");
-  if (answer.control === "simple" && !product.appControl) tags.push("操作更简单");
+  if (answer.wearable === "yes" && product.wearable) tags.push(quizCopy.reasonTags.wearable);
+  if (answer.dual === "yes" && (product.stimulationType || []).includes("dual")) tags.push(quizCopy.reasonTags.dual);
+  if (answer.firstTime === "yes" && !product.appControl) tags.push(quizCopy.reasonTags.firstTime);
+  if (answer.control === "app" && product.appControl) tags.push(quizCopy.reasonTags.app);
+  if (answer.control === "simple" && !product.appControl) tags.push(quizCopy.reasonTags.simple);
   if (answer.budget) {
-    const range = budgetRange(answer.budget);
-    if (Number.isFinite(product.price) && product.price >= range.min && product.price < range.max) tags.push(`预算匹配 ${range.label}`);
+    const range = budgetRange(answer.budget, localeKey);
+    if (Number.isFinite(product.price) && product.price >= range.min && product.price < range.max) tags.push(quizCopy.reasonTags.budget(range.label));
   }
   if (!tags.length) {
-    if (product.appControl) tags.push("偏进阶控制体验");
-    else tags.push("整体匹配度较高");
+    if (product.appControl) tags.push(quizCopy.reasonTags.advanced);
+    else tags.push(quizCopy.reasonTags.overall);
   }
   return tags.slice(0, 3);
 }
 
-function getCollectionPlan(answer: Answer, topPick: Product | null) {
+function getCollectionPlan(answer: Answer, topPick: Product | null, localeKey: SupportedLocaleKey) {
+  const quizCopy = getLocalizedCopy(localeKey).quiz;
   if (answer.firstTime === "yes") {
     return {
       slug: "first-time",
-      title: "First-time picks",
-      summary: "更适合快速缩小范围，先看入门组合与低门槛款式。",
+      title: quizCopy.collectionTitles.firstTime,
+      summary: quizCopy.collectionSummaries.firstTime,
     };
   }
   if (answer.wearable === "yes") {
     return {
       slug: "wearable",
-      title: "Wearable picks",
-      summary: "优先看 wearable 路线，兼顾 discreet 和 hands-free 使用场景。",
+      title: quizCopy.collectionTitles.wearable,
+      summary: quizCopy.collectionSummaries.wearable,
     };
   }
   if (answer.control === "app" || topPick?.appControl) {
     return {
       slug: "app-controlled",
-      title: "App-controlled picks",
-      summary: "适合想要 App Control、远程互动和更细粒度控制的人。",
+      title: quizCopy.collectionTitles.app,
+      summary: quizCopy.collectionSummaries.app,
     };
   }
   if (answer.dual === "yes") {
     return {
       slug: "dual-stimulation",
-      title: "Dual stimulation picks",
-      summary: "优先看 dual stimulation 路线，快速对比更强刺激组合。",
+      title: quizCopy.collectionTitles.dual,
+      summary: quizCopy.collectionSummaries.dual,
     };
   }
   return {
     slug: "first-time",
-    title: "Curated picks",
-    summary: "如果还没有明确方向，先从这组精选路线开始。",
+    title: quizCopy.collectionTitles.curated,
+    summary: quizCopy.collectionSummaries.curated,
   };
 }
 
-function getBundlePlan(answer: Answer, topPick: Product | null) {
+function getBundlePlan(answer: Answer, topPick: Product | null, localeKey: SupportedLocaleKey) {
+  const quizCopy = getLocalizedCopy(localeKey).quiz;
   if (answer.control === "app" || topPick?.appControl) {
     return {
       key: "app-control",
-      title: "App control bundle",
-      summary: "把 App Control 主推荐和同路线商品放在一起，适合继续比较或一起购买。",
+      title: quizCopy.bundleTitles.app,
+      summary: quizCopy.bundleSummaries.app,
       href: `/bundles?plan=app-control${topPick ? `&top=${encodeURIComponent(topPick.slug)}` : ""}`,
     };
   }
   if (answer.wearable === "yes") {
     return {
       key: "wearable",
-      title: "Wearable bundle",
-      summary: "更适合 wearable / discreet 路线的组合浏览。",
+      title: quizCopy.bundleTitles.wearable,
+      summary: quizCopy.bundleSummaries.wearable,
       href: `/bundles?plan=wearable${topPick ? `&top=${encodeURIComponent(topPick.slug)}` : ""}`,
     };
   }
   if (answer.dual === "yes") {
     return {
       key: "dual",
-      title: "Dual stimulation bundle",
-      summary: "更适合想直接比较 dual 路线体验差异的人。",
+      title: quizCopy.bundleTitles.dual,
+      summary: quizCopy.bundleSummaries.dual,
       href: `/bundles?plan=dual${topPick ? `&top=${encodeURIComponent(topPick.slug)}` : ""}`,
     };
   }
   return {
     key: "starter",
-    title: "Starter bundle",
-    summary: "先从入门路线组合开始，再决定是否进入更进阶的控制或刺激类型。",
+    title: quizCopy.bundleTitles.starter,
+    summary: quizCopy.bundleSummaries.starter,
     href: `/bundles?plan=starter${topPick ? `&top=${encodeURIComponent(topPick.slug)}` : ""}`,
   };
 }
 
-export function AiQuiz({ source, sourceProductSlug, products }: Props) {
+export function AiQuiz({ source, sourceProductSlug, products, localeKey: localeKeyProp, siteFeatures }: Props) {
+  const pathname = usePathname();
   const enabled = envClient.aiConciergeEnabled;
   const bucket = useMemo(() => (enabled ? getExperimentBucket(envClient.aiConciergeExperiment) : "B"), [enabled]);
 
@@ -182,24 +196,33 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
   const submittedQuizKeyRef = useRef<string | null>(null);
   const done = answer.firstTime && answer.wearable && answer.dual && answer.budget && answer.control;
 
-  const recommendations = useMemo(() => (done ? pickRecommendations(products, answer) : []), [done, products, answer]);
+  const localeKey = localeKeyProp ?? getLocaleKeyFromPathname(pathname || "/");
+  const bundlesEnabled = siteFeatures?.bundles ?? true;
+  const appControlEnabled = siteFeatures?.appControl ?? true;
+  const quizCopy = getLocalizedCopy(localeKey).quiz;
+  const recommendations = useMemo(() => (done ? pickRecommendations(products, answer, localeKey) : []), [done, products, answer, localeKey]);
   const [cartHint, setCartHint] = useState<string | null>(null);
   const [pendingSlug, setPendingSlug] = useState<string | null>(null);
   const topPick = recommendations[0] ?? null;
-  const collectionPlan = useMemo(() => (done ? getCollectionPlan(answer, topPick) : null), [done, answer, topPick]);
-  const bundlePlan = useMemo(() => (done ? getBundlePlan(answer, topPick) : null), [done, answer, topPick]);
+  const collectionPlan = useMemo(() => (done ? getCollectionPlan(answer, topPick, localeKey) : null), [done, answer, topPick, localeKey]);
+  const featureAwareCollectionPlan =
+    collectionPlan?.slug === "app-control" && !appControlEnabled ? null : collectionPlan;
+  const bundlePlan = useMemo(
+    () => (done && bundlesEnabled ? getBundlePlan(answer, topPick, localeKey) : null),
+    [done, bundlesEnabled, answer, topPick, localeKey],
+  );
   const resultSummary = useMemo(() => {
     if (!done) return null;
-    const budget = budgetRange(answer.budget).label;
+    const budget = budgetRange(answer.budget, localeKey).label;
     const parts = [
-      answer.firstTime === "yes" ? "入门友好" : "不限制入门难度",
-      answer.wearable === "yes" ? "偏 wearable" : "偏非 wearable",
-      answer.dual === "yes" ? "偏 dual stimulation" : "不强求 dual",
-      answer.control === "app" ? "偏 App Control" : "偏简单操作",
-      `预算 ${budget}`,
+      answer.firstTime === "yes" ? quizCopy.resultSummary.firstTime : quizCopy.resultSummary.notFirstTime,
+      answer.wearable === "yes" ? quizCopy.resultSummary.wearable : quizCopy.resultSummary.nonWearable,
+      answer.dual === "yes" ? quizCopy.resultSummary.dual : quizCopy.resultSummary.nonDual,
+      answer.control === "app" ? quizCopy.resultSummary.app : quizCopy.resultSummary.simple,
+      quizCopy.resultSummary.budget(budget),
     ];
     return parts.join(" · ");
-  }, [done, answer]);
+  }, [done, answer, localeKey, quizCopy]);
 
   useEffect(() => {
     track("view", {
@@ -270,10 +293,10 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json?.ok) {
-        setCartHint("加购失败，请打开商品页再试。");
+        setCartHint(quizCopy.addFail);
         return;
       }
-      setCartHint("已加入购物车。");
+      setCartHint(quizCopy.addSuccess);
       if (redirectTo === "cart") {
         track("cta", { experiment: envClient.aiConciergeExperiment, bucket, source, product: product.slug, stage: "cart_click" });
         window.location.href = "/cart?src=ai_concierge&from=quiz";
@@ -284,7 +307,7 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
         window.location.href = "/checkout?src=ai_concierge&from=quiz";
       }
     } catch {
-      setCartHint("加购失败，请稍后再试。");
+      setCartHint(quizCopy.addFail);
     } finally {
       setPendingSlug(null);
     }
@@ -294,20 +317,20 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
     <div className="mt-8 space-y-6">
       {!enabled ? (
         <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-          <p className="text-sm text-zinc-700">AI 导购当前未开启（`NEXT_PUBLIC_AI_CONCIERGE_ENABLED=true` 后生效）。</p>
+          <p className="text-sm text-zinc-700">{quizCopy.disabled}</p>
         </div>
       ) : null}
 
       <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-        <p className="text-xs text-zinc-500">Experiment</p>
+        <p className="text-xs text-zinc-500">{quizCopy.experiment}</p>
         <p className="mt-1 text-sm text-zinc-700">
           {envClient.aiConciergeExperiment} · bucket {bucket}
         </p>
-        <p className="mt-2 text-xs text-zinc-500">source: {source}{sourceProductSlug ? ` · product: ${sourceProductSlug}` : ""}</p>
+        <p className="mt-2 text-xs text-zinc-500">{quizCopy.source}: {source}{sourceProductSlug ? ` · product: ${sourceProductSlug}` : ""}</p>
       </div>
 
       <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-        <p className="text-sm font-medium text-zinc-900">Q1. Is this your first toy?</p>
+        <p className="text-sm font-medium text-zinc-900">{quizCopy.q1}</p>
         <div className="mt-4 flex flex-col gap-3">
           <button
             className={`h-11 rounded-md border px-4 text-left text-sm hover:bg-zinc-50 ${answer.firstTime === "yes" ? "border-zinc-900" : "border-zinc-300 bg-white"}`}
@@ -316,7 +339,7 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
               track("cta", { experiment: envClient.aiConciergeExperiment, bucket, source, stage: "answer_select", q: "firstTime", a: "yes" });
             }}
           >
-            Yes
+            {quizCopy.yes}
           </button>
           <button
             className={`h-11 rounded-md border px-4 text-left text-sm hover:bg-zinc-50 ${answer.firstTime === "no" ? "border-zinc-900" : "border-zinc-300 bg-white"}`}
@@ -325,13 +348,13 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
               track("cta", { experiment: envClient.aiConciergeExperiment, bucket, source, stage: "answer_select", q: "firstTime", a: "no" });
             }}
           >
-            No
+            {quizCopy.no}
           </button>
         </div>
       </div>
 
       <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-        <p className="text-sm font-medium text-zinc-900">Q2. Prefer wearable?</p>
+        <p className="text-sm font-medium text-zinc-900">{quizCopy.q2}</p>
         <div className="mt-4 flex flex-col gap-3">
           <button
             className={`h-11 rounded-md border px-4 text-left text-sm hover:bg-zinc-50 ${answer.wearable === "yes" ? "border-zinc-900" : "border-zinc-300 bg-white"}`}
@@ -340,7 +363,7 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
               track("cta", { experiment: envClient.aiConciergeExperiment, bucket, source, stage: "answer_select", q: "wearable", a: "yes" });
             }}
           >
-            Yes
+            {quizCopy.yes}
           </button>
           <button
             className={`h-11 rounded-md border px-4 text-left text-sm hover:bg-zinc-50 ${answer.wearable === "no" ? "border-zinc-900" : "border-zinc-300 bg-white"}`}
@@ -349,13 +372,13 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
               track("cta", { experiment: envClient.aiConciergeExperiment, bucket, source, stage: "answer_select", q: "wearable", a: "no" });
             }}
           >
-            No
+            {quizCopy.no}
           </button>
         </div>
       </div>
 
       <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-        <p className="text-sm font-medium text-zinc-900">Q3. Want dual stimulation?</p>
+        <p className="text-sm font-medium text-zinc-900">{quizCopy.q3}</p>
         <div className="mt-4 flex flex-col gap-3">
           <button
             className={`h-11 rounded-md border px-4 text-left text-sm hover:bg-zinc-50 ${answer.dual === "yes" ? "border-zinc-900" : "border-zinc-300 bg-white"}`}
@@ -364,7 +387,7 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
               track("cta", { experiment: envClient.aiConciergeExperiment, bucket, source, stage: "answer_select", q: "dual", a: "yes" });
             }}
           >
-            Yes
+            {quizCopy.yes}
           </button>
           <button
             className={`h-11 rounded-md border px-4 text-left text-sm hover:bg-zinc-50 ${answer.dual === "no" ? "border-zinc-900" : "border-zinc-300 bg-white"}`}
@@ -373,13 +396,13 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
               track("cta", { experiment: envClient.aiConciergeExperiment, bucket, source, stage: "answer_select", q: "dual", a: "no" });
             }}
           >
-            No
+            {quizCopy.no}
           </button>
         </div>
       </div>
 
       <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-        <p className="text-sm font-medium text-zinc-900">Q4. Budget range?</p>
+        <p className="text-sm font-medium text-zinc-900">{quizCopy.q4}</p>
         <div className="mt-4 flex flex-col gap-3">
           <button
             className={`h-11 rounded-md border px-4 text-left text-sm hover:bg-zinc-50 ${answer.budget === "low" ? "border-zinc-900" : "border-zinc-300 bg-white"}`}
@@ -412,7 +435,7 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
       </div>
 
       <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-        <p className="text-sm font-medium text-zinc-900">Q5. Control preference?</p>
+        <p className="text-sm font-medium text-zinc-900">{quizCopy.q5}</p>
         <div className="mt-4 flex flex-col gap-3">
           <button
             className={`h-11 rounded-md border px-4 text-left text-sm hover:bg-zinc-50 ${answer.control === "simple" ? "border-zinc-900" : "border-zinc-300 bg-white"}`}
@@ -421,7 +444,7 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
               track("cta", { experiment: envClient.aiConciergeExperiment, bucket, source, stage: "answer_select", q: "control", a: "simple" });
             }}
           >
-            Simple controls
+            {quizCopy.simpleControls}
           </button>
           <button
             className={`h-11 rounded-md border px-4 text-left text-sm hover:bg-zinc-50 ${answer.control === "app" ? "border-zinc-900" : "border-zinc-300 bg-white"}`}
@@ -430,25 +453,25 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
               track("cta", { experiment: envClient.aiConciergeExperiment, bucket, source, stage: "answer_select", q: "control", a: "app" });
             }}
           >
-            Prefer App Control
+            {quizCopy.appControl}
           </button>
         </div>
       </div>
 
       {done ? (
         <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-          <p className="text-sm font-medium text-zinc-900">Your Match</p>
-          <p className="mt-2 text-sm text-zinc-600">基于你的回答，我们优先推荐下面 3 个候选。</p>
+          <p className="text-sm font-medium text-zinc-900">{quizCopy.matchTitle}</p>
+          <p className="mt-2 text-sm text-zinc-600">{quizCopy.matchIntro}</p>
           {resultSummary ? (
             <div className="mt-3 rounded-xl bg-zinc-50 p-3 text-sm text-zinc-700">
-              <p className="font-medium text-zinc-900">推荐摘要</p>
+              <p className="font-medium text-zinc-900">{quizCopy.summaryTitle}</p>
               <p className="mt-1">{resultSummary}</p>
             </div>
           ) : null}
           {topPick?.defaultVariantId ? (
             <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4">
-              <p className="text-sm font-medium text-zinc-900">Top pick: {topPick.name}</p>
-              <p className="mt-1 text-xs text-zinc-500">更强的转化路径：先加入购物车，再直接去结账。</p>
+              <p className="text-sm font-medium text-zinc-900">{quizCopy.topPick}: {topPick.name}</p>
+              <p className="mt-1 text-xs text-zinc-500">{quizCopy.topPickHint}</p>
               <div className="mt-3 flex flex-wrap gap-3">
                 <TrackedSubmitButton
                   type="button"
@@ -469,7 +492,7 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
                     await addTopPick(topPick, "checkout");
                   }}
                 >
-                  {pendingSlug === topPick.slug ? "处理中..." : "Add top pick & checkout"}
+                  {pendingSlug === topPick.slug ? quizCopy.processing : quizCopy.topPickCheckout}
                 </TrackedSubmitButton>
                 <TrackedSubmitButton
                   type="button"
@@ -490,18 +513,18 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
                     await addTopPick(topPick, "cart");
                   }}
                 >
-                  去购物车
+                  {quizCopy.goToCart}
                 </TrackedSubmitButton>
               </div>
             </div>
           ) : null}
-          {collectionPlan || bundlePlan ? (
+          {featureAwareCollectionPlan || bundlePlan ? (
             <div className="mt-4 grid gap-3 md:grid-cols-2">
-              {collectionPlan ? (
+              {featureAwareCollectionPlan ? (
                 <TrackedLink
-                  href={`/collection/${collectionPlan.slug}?src=ai_concierge&from=quiz`}
+                  href={buildLocalePath(`/collection/${featureAwareCollectionPlan.slug}?src=ai_concierge&from=quiz`, localeKey)}
                   targetType="collection"
-                  targetId={collectionPlan.slug}
+                  targetId={featureAwareCollectionPlan.slug}
                   source="ai_concierge"
                   metadata={{
                     stage: "quiz_collection_plan",
@@ -520,14 +543,14 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
                     })
                   }
                 >
-                  <p className="text-xs text-zinc-500">Best next step</p>
-                  <p className="mt-1 text-sm font-medium text-zinc-900">{collectionPlan.title}</p>
-                  <p className="mt-2 text-sm text-zinc-600">{collectionPlan.summary}</p>
+                  <p className="text-xs text-zinc-500">{quizCopy.bestNextStep}</p>
+                  <p className="mt-1 text-sm font-medium text-zinc-900">{featureAwareCollectionPlan.title}</p>
+                  <p className="mt-2 text-sm text-zinc-600">{featureAwareCollectionPlan.summary}</p>
                 </TrackedLink>
               ) : null}
               {bundlePlan ? (
                 <TrackedLink
-                  href={bundlePlan.href}
+                  href={buildLocalePath(bundlePlan.href, localeKey)}
                   targetType="collection"
                   targetId={`bundle:${bundlePlan.key}`}
                   source="ai_concierge"
@@ -548,7 +571,7 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
                     })
                   }
                 >
-                  <p className="text-xs text-zinc-500">Bundle route</p>
+                  <p className="text-xs text-zinc-500">{quizCopy.bundleRoute}</p>
                   <p className="mt-1 text-sm font-medium text-zinc-900">{bundlePlan.title}</p>
                   <p className="mt-2 text-sm text-zinc-600">{bundlePlan.summary}</p>
                 </TrackedLink>
@@ -559,7 +582,7 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
             {recommendations.map((p) => (
               <TrackedLink
                 key={p.slug}
-                href={`/product/${p.slug}?src=ai_concierge&exp=${encodeURIComponent(envClient.aiConciergeExperiment)}&bucket=${encodeURIComponent(bucket)}&from=quiz`}
+                href={buildLocalePath(`/product/${p.slug}?src=ai_concierge&exp=${encodeURIComponent(envClient.aiConciergeExperiment)}&bucket=${encodeURIComponent(bucket)}&from=quiz`, localeKey)}
                 targetType="product"
                 targetId={p.slug}
                 className="rounded-xl border border-zinc-200 bg-white p-4 hover:border-zinc-300"
@@ -590,7 +613,7 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
                 <p className="text-sm font-medium text-zinc-900">{p.name}</p>
                 <p className="mt-1 text-xs text-zinc-500">{p.slug}</p>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {reasonTags(p, answer).map((tag) => (
+                    {reasonTags(p, answer, localeKey).map((tag) => (
                     <span key={tag} className="rounded-full bg-zinc-100 px-2 py-1 text-xs text-zinc-700">
                       {tag}
                     </span>
@@ -632,18 +655,18 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
                           });
                           const json = await res.json().catch(() => ({}));
                           if (!res.ok || !json?.ok) {
-                            setCartHint("加购失败，请打开商品页再试。");
+                            setCartHint(quizCopy.addFail);
                             return;
                           }
-                          setCartHint("已加入购物车。");
+                          setCartHint(quizCopy.addSuccess);
                         } catch {
-                          setCartHint("加购失败，请稍后再试。");
+                          setCartHint(quizCopy.addFail);
                         }
                       }}
                     >
-                      Quick add
+                      {quizCopy.quickAdd}
                     </TrackedSubmitButton>
-                    <span className="text-xs text-zinc-500">不会离开当前页面</span>
+                    <span className="text-xs text-zinc-500">{quizCopy.quickAddHint}</span>
                   </div>
                 ) : null}
               </TrackedLink>
@@ -653,8 +676,8 @@ export function AiQuiz({ source, sourceProductSlug, products }: Props) {
             <div className="mt-4 rounded-xl bg-zinc-50 p-3 text-sm text-zinc-700">
               <p>
                 {cartHint}{" "}
-                <a className="underline underline-offset-4" href="/cart">
-                  去购物车
+                <a className="underline underline-offset-4" href={buildLocalePath("/cart", localeKey)}>
+                  {quizCopy.goToCart}
                 </a>
               </p>
             </div>

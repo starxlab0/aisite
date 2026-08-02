@@ -1,5 +1,6 @@
 export type CollectionPage = {
   slug: string;
+  siteKeys?: string[];
   title: string;
   subtitle?: string;
   description?: string;
@@ -31,4 +32,3 @@ export type CollectionPageViewModel = {
   heroImage?: string;
   introBlocks?: string[];
 };
-

@@ -3,7 +3,8 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { SiteHeader } from "@/components/layout/SiteHeader";
 import { SiteFooter } from "@/components/layout/SiteFooter";
-import { getActiveSiteConfig } from "@/lib/site/config";
+import { getSiteConfigForLocale } from "@/lib/site/config";
+import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -15,18 +16,18 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const site = getActiveSiteConfig();
-
 export const metadata: Metadata = {
-  title: site.brand.name,
-  description: site.brand.description,
+  title: getSiteConfigForLocale().brand.name,
+  description: getSiteConfigForLocale().brand.description,
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const localeKey = await getRequestLocaleKey();
+  const site = getSiteConfigForLocale(localeKey);
   return (
     <html
       lang={site.locale.lang}
