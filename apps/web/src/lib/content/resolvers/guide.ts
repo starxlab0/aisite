@@ -37,10 +37,18 @@ function fromDraft(draft: ControlPlaneDraftRecord<GuideArticleDraftPayload>): Re
   };
 }
 
-function fallbackGuide(slug: string): ResolvedGuideArticle {
+function fallbackGuide(slug: string, siteKey: string): ResolvedGuideArticle {
+  const fallbackArticle = fallbackGuideBySlug[slug];
+  if (fallbackArticle) {
+    return {
+      source: "fallback",
+      article: matchesSiteScope(fallbackArticle, siteKey) ? fallbackArticle : null,
+    };
+  }
+
   return {
     source: "fallback",
-    article: fallbackGuideBySlug[slug] ?? {
+    article: {
       slug,
       title: `Guide: ${slug}`,
       excerpt: "Guide 内容骨架：后续由 Sanity 或 control-plane 已发布 guide draft 驱动。",
@@ -67,7 +75,7 @@ export async function resolveGuideBySlug(slug: string): Promise<ResolvedGuideArt
     };
   }
 
-  return fallbackGuide(slug);
+  return fallbackGuide(slug, siteKey);
 }
 
 export async function resolveGuideList(): Promise<{

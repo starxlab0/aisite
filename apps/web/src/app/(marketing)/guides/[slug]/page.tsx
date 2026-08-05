@@ -56,6 +56,7 @@ export default async function GuideDetailPage({ params }: Props) {
   const { slug } = await params;
   const resolved = await resolveGuideBySlug(slug);
   const article = localizeGuideArticle(resolved.article, localeKey);
+  if (!article) notFound();
   const products = await listProducts();
   const relatedProducts = products.filter((product) => (article?.relatedProductSlugs ?? []).includes(product.slug));
   const featureEnabledCollectionSlugs = (article?.relatedCollectionSlugs ?? []).filter((collectionSlug) =>
