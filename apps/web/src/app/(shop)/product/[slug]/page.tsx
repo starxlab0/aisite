@@ -13,7 +13,7 @@ import { getLocalizedCopy } from "@/lib/site/copy";
 import { localizeProductContent } from "@/lib/site/localize-content";
 import { buildLocalePath } from "@/lib/site/locale-routing";
 import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
-import { getActiveSiteConfig } from "@/lib/site/config";
+import { getActiveSiteConfig } from "@/lib/site/config.server";
 import { formatMoney } from "@/lib/utils/money";
 import { addToCartAction } from "@/features/cart/actions";
 import type { ProductContent } from "@/types/product";
@@ -63,17 +63,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
   const { slug } = await params;
   const sp = (await searchParams) ?? {};
   const previewToken = typeof sp.preview === "string" ? sp.preview : null;
-  const commerce = await getProductBySlug(slug);
-  if (!commerce) {
-    return (
-      <div className="mx-auto w-full max-w-3xl px-4 py-14">
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
-          {copy.notFoundTitle}
-        </h1>
-        <p className="mt-3 text-zinc-600">{copy.notFoundDescription}</p>
-      </div>
-    );
-  }
+
   let previewBadge: string | null = null;
   let resolved = await resolveProductContent(slug);
   if (previewToken) {
@@ -107,8 +97,136 @@ export default async function ProductPage({ params, searchParams }: Props) {
       previewBadge = copy.previewBadge;
     }
   }
-  const faqDraft = await getPublishedProductFaqDraftBySlug(slug);
+
   const localizedContent = localizeProductContent(resolved.content, localeKey);
+  const commerce = await getProductBySlug(slug);
+  if (!commerce) {
+    if (!localizedContent) {
+      return (
+        <div className="mx-auto w-full max-w-3xl px-4 py-14">
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
+            {copy.notFoundTitle}
+          </h1>
+          <p className="mt-3 text-zinc-600">{copy.notFoundDescription}</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="mx-auto w-full max-w-3xl px-4 py-14">
+        {previewBadge ? (
+          <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            {previewBadge}: 当前页面正在渲染未发布内容（仅用于预览）。
+          </div>
+        ) : null}
+
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight text-zinc-900">
+              {localizedContent.title || slug}
+            </h1>
+            {localizedContent.subtitle ? (
+              <p className="mt-2 text-base font-medium text-zinc-700">{localizedContent.subtitle}</p>
+            ) : null}
+            {localizedContent.shortDescription ? (
+              <p className="mt-3 text-zinc-600">{localizedContent.shortDescription}</p>
+            ) : null}
+            <p className="mt-3 text-xs text-zinc-500">source: {resolved.source}</p>
+            {resolved.debug?.draftRef ? (
+              <p className="mt-2 text-xs text-zinc-500">
+                {copy.draftActive}: <code className="rounded bg-zinc-100 px-1">{resolved.debug.draftRef}</code>
+              </p>
+            ) : null}
+          </div>
+          <Link className="text-sm underline underline-offset-4" href={buildLocalePath("/shop", localeKey)}>
+            {copy.backToShop}
+          </Link>
+        </div>
+
+        {localizedContent.hero?.headline || localizedContent.hero?.description ? (
+          <div className="mt-8 rounded-2xl border border-zinc-200 bg-white p-5">
+            {localizedContent.hero.eyebrow ? (
+              <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">{localizedContent.hero.eyebrow}</p>
+            ) : null}
+            {localizedContent.hero.headline ? (
+              <p className="mt-2 text-lg font-semibold text-zinc-900">{localizedContent.hero.headline}</p>
+            ) : null}
+            {localizedContent.hero.description ? (
+              <p className="mt-2 text-sm leading-6 text-zinc-600">{localizedContent.hero.description}</p>
+            ) : null}
+          </div>
+        ) : null}
+
+        {Array.isArray(localizedContent.keyBenefits) && localizedContent.keyBenefits.length ? (
+          <div className="mt-8 rounded-2xl border border-zinc-200 bg-white p-5">
+            <p className="text-sm font-medium text-zinc-900">你会得到什么</p>
+            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-zinc-700">
+              {localizedContent.keyBenefits.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {Array.isArray(localizedContent.whoItsFor) && localizedContent.whoItsFor.length ? (
+          <div className="mt-8 rounded-2xl border border-zinc-200 bg-white p-5">
+            <p className="text-sm font-medium text-zinc-900">适合谁</p>
+            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-zinc-700">
+              {localizedContent.whoItsFor.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {Array.isArray(localizedContent.whyItFeelsDifferent) && localizedContent.whyItFeelsDifferent.length ? (
+          <div className="mt-8 rounded-2xl border border-zinc-200 bg-white p-5">
+            <p className="text-sm font-medium text-zinc-900">为什么体验不一样</p>
+            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-zinc-700">
+              {localizedContent.whyItFeelsDifferent.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {Array.isArray(localizedContent.appControlHighlights) && localizedContent.appControlHighlights.length ? (
+          <div className="mt-8 rounded-2xl border border-zinc-200 bg-white p-5">
+            <p className="text-sm font-medium text-zinc-900">App Control 亮点</p>
+            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-zinc-700">
+              {localizedContent.appControlHighlights.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {Array.isArray(localizedContent.careInstructions) && localizedContent.careInstructions.length ? (
+          <div className="mt-8 rounded-2xl border border-zinc-200 bg-white p-5">
+            <p className="text-sm font-medium text-zinc-900">使用与清洁</p>
+            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-zinc-700">
+              {localizedContent.careInstructions.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {Array.isArray(localizedContent.whatsInBox) && localizedContent.whatsInBox.length ? (
+          <div className="mt-8 rounded-2xl border border-zinc-200 bg-white p-5">
+            <p className="text-sm font-medium text-zinc-900">盒内有什么</p>
+            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-zinc-700">
+              {localizedContent.whatsInBox.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  const faqDraft = await getPublishedProductFaqDraftBySlug(slug);
   const vm = toProductPageViewModel({ commerce, content: localizedContent, localeKey });
   const relatedProducts = (await listProducts())
     .filter((item) => item.slug !== slug)
@@ -123,7 +241,7 @@ export default async function ProductPage({ params, searchParams }: Props) {
   const attributionSrc = typeof sp.src === "string" ? sp.src : null;
   const attributionExp = typeof sp.exp === "string" ? sp.exp : null;
   const attributionBucket = typeof sp.bucket === "string" ? sp.bucket : null;
-  const site = getActiveSiteConfig();
+  const site = await getActiveSiteConfig();
   const productJsonLd = {
     "@context": "https://schema.org",
     "@type": "Product",
