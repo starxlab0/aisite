@@ -1,15 +1,15 @@
 import Link from "next/link";
 import { FooterNewsletter } from "@/components/layout/FooterNewsletter";
 import { GeoPreferenceSelector } from "@/components/layout/GeoPreferenceSelector";
-import { filterFeatureEnabledNavItems, getSiteConfigForLocale } from "@/lib/site/config";
+import { filterFeatureEnabledNavItems, getSiteConfigForLocale } from "@/lib/site/config.server";
 import { getFooterNavLabel } from "@/lib/site/copy";
 import { buildLocalePath } from "@/lib/site/locale-routing";
 import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
 
 export async function SiteFooter() {
   const localeKey = await getRequestLocaleKey();
-  const site = getSiteConfigForLocale(localeKey);
-  const footerNavItems = filterFeatureEnabledNavItems(site.site.navigation.footer, localeKey);
+  const site = await getSiteConfigForLocale(localeKey);
+  const footerNavItems = await filterFeatureEnabledNavItems(site.site.navigation.footer, localeKey);
 
   return (
     <footer className="mt-auto border-t border-zinc-200 bg-white">

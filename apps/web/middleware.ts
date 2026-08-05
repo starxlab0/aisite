@@ -15,6 +15,14 @@ import {
   GEO_RECOMMENDED_SITE_COOKIE,
 } from "@/lib/geo/geo.server";
 
+const KNOWN_SITE_KEYS = new Set(["cn-store", "us-store", "jp-store"]);
+
+function normalizeSiteKey(input?: string | null) {
+  const value = typeof input === "string" ? input.trim() : "";
+  if (!value) return null;
+  return KNOWN_SITE_KEYS.has(value) ? value : null;
+}
+
 function shouldSkip(pathname: string) {
   return (
     pathname.startsWith("/api") ||
@@ -67,6 +75,10 @@ export function middleware(request: NextRequest) {
   }
 
   const geo = buildGeoSignals({ headers: request.headers });
+  const manualSiteKey = normalizeSiteKey(request.cookies.get(GEO_MANUAL_SITE_COOKIE)?.value);
+  const preferredSiteKey = normalizeSiteKey(geo.recommendedSiteKey);
+  const defaultSiteKey = normalizeSiteKey(process.env.SITE_KEY) || "cn-store";
+  const effectiveSiteKey = manualSiteKey || preferredSiteKey || defaultSiteKey;
   const cookieLocale = request.cookies.get(LOCALE_COOKIE_NAME)?.value;
   const { localeKey, pathname: strippedPathname } = stripLocalePrefix(pathname);
   const effectiveLocale = isSupportedLocaleKey(localeKey)
@@ -83,6 +95,7 @@ export function middleware(request: NextRequest) {
 
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-site-locale", effectiveLocale);
+  requestHeaders.set("x-site-key", effectiveSiteKey);
   requestHeaders.set("x-site-visible-pathname", pathname);
   if (geo.country) requestHeaders.set("x-geo-country", geo.country);
   if (geo.recommendedSiteKey) requestHeaders.set("x-geo-recommended-site", geo.recommendedSiteKey);

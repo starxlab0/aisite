@@ -6,7 +6,8 @@ import { resolveGuideBySlug } from "@/lib/content/resolvers";
 import { buildAbsoluteUrl } from "@/lib/seo/url";
 import { buildSeoMetadata } from "@/lib/seo/metadata";
 import { getLocalizedCopy } from "@/lib/site/copy";
-import { getSiteConfigForLocale, isFeaturePathEnabled, isSiteFeatureEnabled } from "@/lib/site/config";
+import { getSiteConfigForLocale } from "@/lib/site/config.server";
+import { isFeaturePathEnabledForFeatures } from "@/lib/site/feature-utils";
 import { localizeGuideArticle } from "@/lib/site/localize-content";
 import { buildLocalePath } from "@/lib/site/locale-routing";
 import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
@@ -18,7 +19,8 @@ type Props = {
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const localeKey = await getRequestLocaleKey();
-  if (!isSiteFeatureEnabled("guides", localeKey)) {
+  const site = await getSiteConfigForLocale(localeKey);
+  if (!site.site.features.guides) {
     return buildSeoMetadata({
       title: "Not Found",
       description: "Not Found",
@@ -48,8 +50,8 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
 
 export default async function GuideDetailPage({ params }: Props) {
   const localeKey = await getRequestLocaleKey();
-  if (!isSiteFeatureEnabled("guides", localeKey)) notFound();
-  const site = getSiteConfigForLocale(localeKey);
+  const site = await getSiteConfigForLocale(localeKey);
+  if (!site.site.features.guides) notFound();
   const copy = getLocalizedCopy(localeKey).guides;
   const { slug } = await params;
   const resolved = await resolveGuideBySlug(slug);
@@ -57,7 +59,7 @@ export default async function GuideDetailPage({ params }: Props) {
   const products = await listProducts();
   const relatedProducts = products.filter((product) => (article?.relatedProductSlugs ?? []).includes(product.slug));
   const featureEnabledCollectionSlugs = (article?.relatedCollectionSlugs ?? []).filter((collectionSlug) =>
-    isFeaturePathEnabled(`/collection/${collectionSlug}`, localeKey),
+    isFeaturePathEnabledForFeatures(`/collection/${collectionSlug}`, site.site.features),
   );
   const guideJsonLd = {
     "@context": "https://schema.org",

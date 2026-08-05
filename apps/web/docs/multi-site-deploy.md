@@ -238,13 +238,15 @@ export const myNewSite: SiteDefinition = {
 
 ## 当前边界
 
-当前实现是“多站点独立部署”，不是“单次部署自动按域名切站”。
+当前实现同时支持两种落地方式：
 
-所以：
+1. 多站点独立部署：每个部署实例用环境变量固定绑定一个 `SITE_KEY`（更简单、更常见）。
+2. 单域名单部署多站点：通过 `geo_site_choice` 写入 cookie，再由 middleware 注入 `x-site-key`，让同一部署在不同请求里切换站点。
 
-- 每个站点都需要单独部署
-- 每个部署都用环境变量固定绑定一个 `SITE_KEY`
-- 运行时不会根据请求 host 自动切站
+如果你选择方案 2（单域名单部署多站点），需要在 Vercel 环境变量里同时配置：
+
+- `SITE_KEY`（默认站点，例如 `cn-store`）
+- `SITE_URLS_BY_SITE_KEY`（JSON，三站点都指向同一个域名也可以）
 
 ## 内容按站点隔离
 

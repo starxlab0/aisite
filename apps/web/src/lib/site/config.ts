@@ -3,7 +3,7 @@ import { isFeaturePathEnabledForFeatures } from "@/lib/site/feature-utils";
 import { listAvailableSiteKeysForContext } from "@/lib/site/site-config-utils";
 import type { ActiveSiteConfig, SiteContext, TenantConfig } from "@/lib/site/types";
 
-const fallbackContext: SiteContext = {
+export const fallbackSiteContext: SiteContext = {
   tenantKey: "xiao",
   brandKey: "brand",
   siteKey: "cn-store",
@@ -11,10 +11,10 @@ const fallbackContext: SiteContext = {
 };
 
 function readRuntimeSiteContext(): SiteContext {
-  const tenantKey = process.env.SITE_TENANT_KEY?.trim() || fallbackContext.tenantKey;
-  const brandKey = process.env.SITE_BRAND_KEY?.trim() || fallbackContext.brandKey;
-  const siteKey = process.env.SITE_KEY?.trim() || fallbackContext.siteKey;
-  const localeKey = process.env.SITE_DEFAULT_LOCALE?.trim() || fallbackContext.localeKey;
+  const tenantKey = process.env.SITE_TENANT_KEY?.trim() || fallbackSiteContext.tenantKey;
+  const brandKey = process.env.SITE_BRAND_KEY?.trim() || fallbackSiteContext.brandKey;
+  const siteKey = process.env.SITE_KEY?.trim() || fallbackSiteContext.siteKey;
+  const localeKey = process.env.SITE_DEFAULT_LOCALE?.trim() || fallbackSiteContext.localeKey;
   return { tenantKey, brandKey, siteKey, localeKey };
 }
 
@@ -23,7 +23,7 @@ function normalizeLocaleKey(localeKey?: string) {
   return normalized || readRuntimeSiteContext().localeKey;
 }
 
-function resolveSiteConfig(context: SiteContext): ActiveSiteConfig {
+export function resolveSiteConfig(context: SiteContext): ActiveSiteConfig {
   const tenantConfig: TenantConfig | undefined = tenantRegistry[context.tenantKey];
   if (!tenantConfig) {
     throw new Error(`Unknown tenantKey: ${context.tenantKey}`);

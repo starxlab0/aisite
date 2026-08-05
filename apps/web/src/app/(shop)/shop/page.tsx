@@ -4,7 +4,8 @@ import { ProductCard } from "@/components/commerce/ProductCard";
 import { AiConciergeEntry } from "@/components/ai/ai-concierge-entry";
 import { listProducts } from "@/lib/commerce/products";
 import { buildSeoMetadata } from "@/lib/seo/metadata";
-import { getSiteConfigForLocale, isFeaturePathEnabled } from "@/lib/site/config";
+import { getSiteConfigForLocale } from "@/lib/site/config.server";
+import { isFeaturePathEnabledForFeatures } from "@/lib/site/feature-utils";
 import { buildLocalePath } from "@/lib/site/locale-routing";
 import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
 
@@ -17,7 +18,7 @@ function localizeMerchText<T extends { locales?: Record<string, Partial<T>> }>(v
 
 export async function generateMetadata(): Promise<Metadata> {
   const localeKey = await getRequestLocaleKey();
-  const site = getSiteConfigForLocale(localeKey);
+  const site = await getSiteConfigForLocale(localeKey);
   const shopIntro = localizeMerchText(site.site.merchandising.shopIntro, localeKey);
 
   return buildSeoMetadata({
@@ -31,7 +32,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export default async function ShopPage() {
   const localeKey = await getRequestLocaleKey();
-  const site = getSiteConfigForLocale(localeKey);
+  const site = await getSiteConfigForLocale(localeKey);
   const products = await listProducts();
   const availableProducts = products.filter(
     (product) => product.allowBackorder || (product.inventoryQuantity ?? 0) > 0,
@@ -41,7 +42,7 @@ export default async function ShopPage() {
   const beginnerFriendlyCount = products.filter((product) => product.beginnerLevel >= 4).length;
   const shopIntro = localizeMerchText(site.site.merchandising.shopIntro, localeKey);
   const shopQuickLinks = site.site.merchandising.shopQuickLinks
-    .filter((item) => isFeaturePathEnabled(item.href, localeKey))
+    .filter((item) => isFeaturePathEnabledForFeatures(item.href, site.site.features))
     .map((item) => localizeMerchText(item, localeKey));
   const shopAdviceCards = site.site.merchandising.shopAdviceCards.map((item) => localizeMerchText(item, localeKey));
 

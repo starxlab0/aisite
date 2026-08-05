@@ -9,7 +9,8 @@ import { buildSeoMetadata } from "@/lib/seo/metadata";
 import { getRepoChangeSeoOverride } from "@/lib/seo/repo-change-overrides";
 import { buildAbsoluteUrl } from "@/lib/seo/url";
 import { buildLocalePath } from "@/lib/site/locale-routing";
-import { filterFeatureEnabledNavItems, getSiteConfigForLocale, isFeaturePathEnabled } from "@/lib/site/config";
+import { filterFeatureEnabledNavItems, getSiteConfigForLocale } from "@/lib/site/config.server";
+import { isFeaturePathEnabledForFeatures } from "@/lib/site/feature-utils";
 import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
 import { SignalTracker } from "@/components/signals/signal-tracker";
 import { TrackedLink } from "@/components/signals/tracked-link";
@@ -60,7 +61,7 @@ function getCollectionPageCopy(localeKey: "en" | "zh") {
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const localeKey = await getRequestLocaleKey();
-  const site = getSiteConfigForLocale(localeKey);
+  const site = await getSiteConfigForLocale(localeKey);
   const copy = getCollectionPageCopy(localeKey);
   const { slug } = await params;
   const content = await resolveCollectionContent(slug);
@@ -78,7 +79,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
 
 export default async function CollectionPage({ params, searchParams }: Props) {
   const localeKey = await getRequestLocaleKey();
-  const site = getSiteConfigForLocale(localeKey);
+  const site = await getSiteConfigForLocale(localeKey);
   const copy = getCollectionPageCopy(localeKey);
   const { slug } = await params;
   const sp = (await searchParams) ?? {};
@@ -116,15 +117,15 @@ export default async function CollectionPage({ params, searchParams }: Props) {
     ? localizedOverride.sections.map((section) => localizeValue(section, localeKey))
     : content.sections;
   const internalLinks = localizedOverride?.internalLinks ?? content.internalLinks;
-  const featureEnabledInternalLinks = filterFeatureEnabledNavItems(
+  const featureEnabledInternalLinks = (await filterFeatureEnabledNavItems(
     internalLinks.map((href) => ({ href })),
     localeKey,
-  ).map((item) => item.href);
+  )).map((item) => item.href);
   const localizedOverrideCtaLinks = (localizedOverride?.ctaLinks ?? []).map((item) => localizeValue(item, localeKey));
   const heroCtaLinks = pickCollectionCtaLinks(
     content.ctaLinks,
     localizedOverrideCtaLinks,
-    (pathname) => isFeaturePathEnabled(pathname, localeKey),
+    (pathname) => isFeaturePathEnabledForFeatures(pathname, site.site.features),
   );
   const contentRef = content.debug?.contentRef ?? content.debug?.draftRef ?? null;
   const allProducts = await listProducts();

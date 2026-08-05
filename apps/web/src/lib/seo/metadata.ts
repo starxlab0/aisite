@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { getSiteConfigForLocale } from "@/lib/site/config";
+import { getSiteConfigForLocale } from "@/lib/site/config.server";
 import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
 import { buildLocalePath } from "@/lib/site/locale-routing";
 import { buildSeoAlternates } from "@/lib/seo/alternates";
@@ -35,7 +35,7 @@ function toAbsoluteUrl(value: string) {
 
 export async function buildSeoMetadata(input: BuildSeoMetadataInput): Promise<Metadata> {
   const localeKey = await getRequestLocaleKey();
-  const site = getSiteConfigForLocale(localeKey);
+  const site = await getSiteConfigForLocale(localeKey);
   const title = input.override?.title || input.title;
   const description = input.override?.description || input.description;
   const canonical = toAbsoluteUrl(input.override?.canonical || buildLocalePath(input.path, localeKey));
@@ -48,7 +48,7 @@ export async function buildSeoMetadata(input: BuildSeoMetadataInput): Promise<Me
   return {
     title,
     description,
-    alternates: buildSeoAlternates({
+    alternates: await buildSeoAlternates({
       path: input.path,
       canonicalPath: input.override?.canonical || buildLocalePath(input.path, localeKey),
       siteKeys: input.siteKeys,
