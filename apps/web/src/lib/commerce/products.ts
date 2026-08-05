@@ -110,7 +110,7 @@ function withStorePriceContext(path: string) {
 }
 
 export async function listProducts(): Promise<CommerceProduct[]> {
-  const siteKey = getCurrentSiteKey();
+  const siteKey = await getCurrentSiteKey();
   if (getCommerceMode() === "mock") return filterBySiteScope(mockProducts, siteKey);
   // 默认要求 Medusa 可用；如需 mock，请设置 NEXT_PUBLIC_COMMERCE_MODE=mock
   if (!getMedusaBaseUrl()) {
@@ -123,7 +123,7 @@ export async function listProducts(): Promise<CommerceProduct[]> {
 }
 
 export async function getProductBySlug(slug: string): Promise<CommerceProduct | null> {
-  const siteKey = getCurrentSiteKey();
+  const siteKey = await getCurrentSiteKey();
   return getProductBySlugForSite(slug, siteKey);
 }
 
