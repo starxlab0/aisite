@@ -5,14 +5,15 @@ import { buildAbsoluteUrl } from "@/lib/seo/url";
 import { buildSeoMetadata } from "@/lib/seo/metadata";
 import { resolveGuideList } from "@/lib/content/resolvers";
 import { getLocalizedCopy } from "@/lib/site/copy";
-import { getSiteConfigForLocale, isSiteFeatureEnabled } from "@/lib/site/config";
+import { getSiteConfigForLocale } from "@/lib/site/config.server";
 import { localizeGuideArticle } from "@/lib/site/localize-content";
 import { buildLocalePath } from "@/lib/site/locale-routing";
 import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
 
 export async function generateMetadata(): Promise<Metadata> {
   const localeKey = await getRequestLocaleKey();
-  if (!isSiteFeatureEnabled("guides", localeKey)) {
+  const site = await getSiteConfigForLocale(localeKey);
+  if (!site.site.features.guides) {
     return buildSeoMetadata({
       title: "Not Found",
       description: "Not Found",
@@ -32,8 +33,8 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export default async function GuidesPage() {
   const localeKey = await getRequestLocaleKey();
-  if (!isSiteFeatureEnabled("guides", localeKey)) notFound();
-  const site = getSiteConfigForLocale(localeKey);
+  const site = await getSiteConfigForLocale(localeKey);
+  if (!site.site.features.guides) notFound();
   const copy = getLocalizedCopy(localeKey).guides;
   const guides = await resolveGuideList();
   const localizedItems = guides.items

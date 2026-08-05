@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getCurrentCart } from "@/features/cart/server";
-import { filterFeatureEnabledNavItems, getSiteConfigForLocale } from "@/lib/site/config";
+import { filterFeatureEnabledNavItems, getSiteConfigForLocale } from "@/lib/site/config.server";
 import { getHeaderNavLabel, getLocalizedCopy } from "@/lib/site/copy";
 import { buildLocalePath, stripLocalePrefix } from "@/lib/site/locale-routing";
 import { getRequestLocaleKey, getRequestVisiblePathname } from "@/lib/site/locale-routing.server";
@@ -9,9 +9,9 @@ import { GeoRecommendationBanner } from "@/components/layout/GeoRecommendationBa
 export async function SiteHeader() {
   const localeKey = await getRequestLocaleKey();
   const visiblePathname = await getRequestVisiblePathname();
-  const site = getSiteConfigForLocale(localeKey);
+  const site = await getSiteConfigForLocale(localeKey);
   const copy = getLocalizedCopy(localeKey);
-  const headerNavItems = filterFeatureEnabledNavItems(site.site.navigation.header, localeKey);
+  const headerNavItems = await filterFeatureEnabledNavItems(site.site.navigation.header, localeKey);
   const cart = await getCurrentCart();
   const cartQuantity = cart.items.reduce((sum, item) => sum + item.quantity, 0);
   const canonicalPath = stripLocalePrefix(visiblePathname).pathname;

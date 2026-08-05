@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { getSiteBaseUrl } from "@/lib/seo/url";
-import { listAvailableSiteKeys } from "@/lib/site/config";
+import { listAvailableSiteKeys } from "@/lib/site/config.server";
 import { buildLocalePath, stripLocalePrefix, SUPPORTED_LOCALE_KEYS } from "@/lib/site/locale-routing";
 import { getRequestLocaleKey, getRequestVisiblePathname } from "@/lib/site/locale-routing.server";
-import { getActiveSiteContext, getSiteConfigForLocale } from "@/lib/site/config";
+import { getActiveSiteContext, getSiteConfigForLocale } from "@/lib/site/config.server";
 import { getSiteUrlBySiteKey } from "@/lib/site/site-url-map";
 import { appendGeoPreferenceParams } from "@/lib/geo/geo-switch-url";
 import { resolveSafeSiteSwitchPath } from "@/lib/geo/site-switch";
@@ -21,9 +21,9 @@ const localeLabels: Record<(typeof SUPPORTED_LOCALE_KEYS)[number], string> = {
 
 export async function GeoPreferenceSelector() {
   const localeKey = await getRequestLocaleKey();
-  const site = getSiteConfigForLocale(localeKey);
-  const context = getActiveSiteContext();
-  const availableSiteKeys = listAvailableSiteKeys(context);
+  const site = await getSiteConfigForLocale(localeKey);
+  const context = await getActiveSiteContext();
+  const availableSiteKeys = await listAvailableSiteKeys(context);
   const visiblePathname = await getRequestVisiblePathname();
   const strippedPath = stripLocalePrefix(visiblePathname).pathname;
   const currentBaseUrl = getSiteBaseUrl();

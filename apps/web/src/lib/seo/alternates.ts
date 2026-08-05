@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { isFeaturePathEnabledForFeatures } from "@/lib/site/feature-utils";
 import { buildLocalePath, SUPPORTED_LOCALE_KEYS, type SupportedLocaleKey } from "@/lib/site/locale-routing";
 import { tenantRegistry } from "@/lib/site/site-registry";
-import { getActiveSiteContext } from "@/lib/site/config";
+import { getActiveSiteContext } from "@/lib/site/config.server";
 import { getSiteBaseUrl } from "@/lib/seo/url";
 import { getSiteUrlBySiteKey } from "@/lib/site/site-url-map";
 
@@ -25,8 +25,8 @@ function buildHreflang(siteKey: string, localeKey: SupportedLocaleKey) {
   return localeKey === "zh" ? "zh-US" : "en-US";
 }
 
-export function buildSeoAlternates(input: BuildAlternatesInput): Metadata["alternates"] {
-  const context = getActiveSiteContext();
+export async function buildSeoAlternates(input: BuildAlternatesInput): Promise<Metadata["alternates"]> {
+  const context = await getActiveSiteContext();
   const currentBaseUrl = getSiteBaseUrl();
   const defaultBaseUrl = getSiteUrlBySiteKey("us-store") || currentBaseUrl;
   const tenant = tenantRegistry[context.tenantKey];

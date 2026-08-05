@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { appendGeoPreferenceParams } from "@/lib/geo/geo-switch-url";
-import { getSiteConfigForLocale } from "@/lib/site/config";
+import { getSiteConfigForLocale } from "@/lib/site/config.server";
 import { buildLocalePath, stripLocalePrefix } from "@/lib/site/locale-routing";
 import { getRequestLocaleKey, getRequestVisiblePathname } from "@/lib/site/locale-routing.server";
 import {
@@ -14,7 +14,7 @@ import { resolveSafeSiteSwitchPath } from "@/lib/geo/site-switch";
 
 export async function GeoRecommendationBanner() {
   const localeKey = await getRequestLocaleKey();
-  const site = getSiteConfigForLocale(localeKey);
+  const site = await getSiteConfigForLocale(localeKey);
   const country = await getRequestGeoCountry();
   const recommendedSiteKey = await getRequestGeoRecommendedSiteKey();
   const manualSiteKey = await getRequestGeoManualSiteKey();
