@@ -87,7 +87,7 @@ function fallback(slug: string): ResolvedCollectionContent {
 }
 
 export async function resolveCollectionContent(slug: string): Promise<ResolvedCollectionContent> {
-  const siteKey = getCurrentSiteKey();
+  const siteKey = await getCurrentSiteKey();
   const draft = await getPublishedCollectionDraftBySlug(slug);
   if (draft && matchesSiteScope(draft.payload, siteKey)) {
     return fromDraft({ slug, draft });

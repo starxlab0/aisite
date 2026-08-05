@@ -47,7 +47,7 @@ function fromDraft(input: {
 }
 
 export async function resolveProductContent(slug: string): Promise<ResolvedProductContent> {
-  const siteKey = getCurrentSiteKey();
+  const siteKey = await getCurrentSiteKey();
   const draft = await getPublishedProductContentDraftBySlug(slug);
   if (draft && matchesSiteScope(draft.payload, siteKey)) {
     return fromDraft({ slug, draft });

@@ -75,7 +75,7 @@ function buildGroupsFromSanity(items: SanityFaqItem[]): ResolvedFaqGroup[] {
 }
 
 export async function resolveFaqContent(): Promise<ResolvedFaqContent> {
-  const siteKey = getCurrentSiteKey();
+  const siteKey = await getCurrentSiteKey();
   const sanityItems = await getFaqItems();
   if (sanityItems.length > 0) {
     return {

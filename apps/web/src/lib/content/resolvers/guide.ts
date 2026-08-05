@@ -53,7 +53,7 @@ function fallbackGuide(slug: string): ResolvedGuideArticle {
 }
 
 export async function resolveGuideBySlug(slug: string): Promise<ResolvedGuideArticle> {
-  const siteKey = getCurrentSiteKey();
+  const siteKey = await getCurrentSiteKey();
   const draft = await getPublishedGuideDraftBySlug(slug);
   if (draft && matchesSiteScope(draft.payload, siteKey)) {
     return fromDraft(draft);
@@ -74,7 +74,7 @@ export async function resolveGuideList(): Promise<{
   source: "control-plane-draft" | "sanity" | "fallback";
   items: GuideArticle[];
 }> {
-  const siteKey = getCurrentSiteKey();
+  const siteKey = await getCurrentSiteKey();
   const drafts = await getPublishedGuideDrafts();
   if (drafts.length > 0) {
     return {

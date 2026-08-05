@@ -56,7 +56,7 @@ export async function getPublishedCollectionDraftBySlug(
     status: "published",
   });
 
-  const siteKey = getCurrentSiteKey();
+  const siteKey = await getCurrentSiteKey();
   return drafts.find((draft) => matchesSiteScope(draft.payload, siteKey)) ?? drafts[0] ?? null;
 }
 
