@@ -9,7 +9,7 @@
     "start": "node ./node_modules/next/dist/bin/next start",
     "lint": "node ./node_modules/eslint/bin/eslint.js",
     "test:checkout-regression": "node --experimental-strip-types --test src/lib/commerce/cart-logic.test.ts",
-    "test:multi-site-regression": "node --experimental-strip-types --experimental-specifier-resolution=node --test src/lib/site/site-scope-utils.test.ts src/lib/site/feature-utils.test.ts src/lib/site/site-config-utils.test.ts src/lib/control-plane/generate-draft-scope.test.ts src/lib/control-plane/collection-draft-form.test.ts src/lib/collections/collection-merchandising.test.ts src/lib/commerce/site-availability.test.ts src/lib/seo/sitemap-utils.test.ts src/lib/geo/geo-utils.test.ts src/lib/geo/geo-switch-url.test.ts"
+    "test:multi-site-regression": "node --experimental-strip-types --experimental-specifier-resolution=node --test src/lib/site/site-scope-utils.test.ts src/lib/site/feature-utils.test.ts src/lib/site/site-config-utils.test.ts src/lib/site/site-labels.test.ts src/lib/site/copy.test.ts src/lib/control-plane/generate-draft-scope.test.ts src/lib/control-plane/collection-draft-form.test.ts src/lib/collections/collection-merchandising.test.ts src/lib/commerce/site-availability.test.ts src/lib/seo/sitemap-utils.test.ts src/lib/geo/geo-utils.test.ts src/lib/geo/geo-switch-url.test.ts"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4",

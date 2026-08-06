@@ -1,7 +1,22 @@
 import type { SupportedLocaleKey } from "@/lib/site/locale-routing";
 
 export function getHeaderNavLabel(href: string, fallback: string, localeKey: SupportedLocaleKey) {
-  if (localeKey === "zh") return fallback;
+  if (localeKey === "zh") {
+    const labels: Record<string, string> = {
+      "/shop": "选购",
+      "/guides": "导购",
+      "/faq": "支持",
+      "/bundles": "套装",
+      "/app-control": "App 控制",
+      "/collection/first-time": "入门路线",
+      "/privacy": "隐私",
+      "/returns": "退换",
+      "/shipping": "配送",
+      "/contact": "联系",
+    };
+
+    return labels[href] || fallback;
+  }
 
   const labels: Record<string, string> = {
     "/shop": "Shop",
