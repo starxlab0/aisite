@@ -3,6 +3,13 @@ import { buildLocalePath } from "@/lib/site/locale-routing";
 import { getRequestLocaleKey } from "@/lib/site/locale-routing.server";
 import { formatMoney } from "@/lib/utils/money";
 import type { CommerceProduct } from "@/types/product";
+import {
+  buildProductBadges,
+  getProductCardCopy,
+  getRuntimeLabel,
+  getStockLabel,
+  getWaterproofLabel,
+} from "./product-card-copy";
 
 type ProductCardProps = {
   product: CommerceProduct;
@@ -12,47 +19,11 @@ type ProductCardProps = {
   plain?: boolean;
 };
 
-function buildProductBadges(product: CommerceProduct) {
-  const badges: string[] = [];
-  if (product.appControl) badges.push("App 控制");
-  if (product.wearable) badges.push("可穿戴");
-  if (product.coupleFriendly) badges.push("适合情侣");
-  if (product.stimulationType.includes("dual")) badges.push("双重刺激");
-  if (product.discreetLevel >= 4) badges.push("低调安静");
-  return badges.slice(0, 4);
-}
-
-function stockLabel(product: CommerceProduct) {
-  if (product.allowBackorder) return "支持预售";
-  if (typeof product.inventoryQuantity === "number" && product.inventoryQuantity <= 0) {
-    return "暂时缺货";
-  }
-  if (typeof product.inventoryQuantity === "number" && product.inventoryQuantity < 10) {
-    return `仅剩 ${product.inventoryQuantity} 件`;
-  }
-  return "现货可下单";
-}
-
-function runtimeLabel(product: CommerceProduct) {
-  if (product.runtimeMinutes) {
-    return `${product.runtimeMinutes} 分钟`;
-  }
-
-  return "详情页查看";
-}
-
-function waterproofLabel(product: CommerceProduct) {
-  if (product.waterproof) {
-    return product.waterproof;
-  }
-
-  return "未标注";
-}
-
 export async function ProductCard({ product, href, eyebrow, compact = false, plain = false }: ProductCardProps) {
   const localeKey = await getRequestLocaleKey();
   const targetHref = href ?? buildLocalePath(`/product/${product.slug}`, localeKey);
-  const badges = buildProductBadges(product);
+  const badges = buildProductBadges(product, localeKey);
+  const copy = getProductCardCopy(localeKey);
   const content = (
     <>
       <div className="flex aspect-[4/3] items-end justify-between bg-gradient-to-br from-zinc-50 via-white to-zinc-100 p-5">
@@ -79,7 +50,7 @@ export async function ProductCard({ product, href, eyebrow, compact = false, pla
             ) : null}
           </div>
           <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
-            {stockLabel(product)}
+            {getStockLabel(product, localeKey)}
           </span>
         </div>
 
@@ -97,21 +68,21 @@ export async function ProductCard({ product, href, eyebrow, compact = false, pla
         {!compact ? (
           <div className="mt-4 grid grid-cols-2 gap-3 text-sm text-zinc-600">
             <div>
-              <p className="text-zinc-500">续航</p>
+              <p className="text-zinc-500">{copy.specLabels.runtime}</p>
               <p className="mt-1 font-medium text-zinc-900">
-                {runtimeLabel(product)}
+                {getRuntimeLabel(product, localeKey)}
               </p>
             </div>
             <div>
-              <p className="text-zinc-500">防水</p>
-              <p className="mt-1 font-medium text-zinc-900">{waterproofLabel(product)}</p>
+              <p className="text-zinc-500">{copy.specLabels.waterproof}</p>
+              <p className="mt-1 font-medium text-zinc-900">{getWaterproofLabel(product, localeKey)}</p>
             </div>
             <div>
-              <p className="text-zinc-500">静音度</p>
+              <p className="text-zinc-500">{copy.discreetLevel}</p>
               <p className="mt-1 font-medium text-zinc-900">{product.discreetLevel}/5</p>
             </div>
             <div>
-              <p className="text-zinc-500">新手友好</p>
+              <p className="text-zinc-500">{copy.beginnerFriendly}</p>
               <p className="mt-1 font-medium text-zinc-900">{product.beginnerLevel}/5</p>
             </div>
           </div>
@@ -119,7 +90,7 @@ export async function ProductCard({ product, href, eyebrow, compact = false, pla
 
         <div className="mt-6 flex items-center justify-between">
           <span className="text-sm text-zinc-600 group-hover:text-zinc-900">
-            查看详情
+            {copy.viewDetails}
           </span>
           <span className="text-lg text-zinc-400 transition group-hover:translate-x-1">→</span>
         </div>
